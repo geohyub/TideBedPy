@@ -1,0 +1,19 @@
+{
+  "name": "세팅_20260306",
+  "created": "2026-03-06 11:47:18",
+  "version": "2.1.0",
+  "settings": {
+    "nav_path": "C:/Users/JWONLINETEAM/Desktop/TideBed (2)/Program/Sample/TideBed/Navi/Before",
+    "tide_path": "C:/Users/JWONLINETEAM/Desktop/실시간",
+    "output_path": "C:/Users/JWONLINETEAM/Desktop/실시간/1.tid",
+    "db_path": "C:/Users/JWONLINETEAM/Desktop/TideBed (2)/info/표준개정수DB",
+    "station_path": "C:/Users/JWONLINETEAM/Desktop/TideBed (2)/info/표준개정수DB/기준항정보.txt",
+    "tide_type": "실측",
+    "rank_limit": 3,
+    "time_interval": 600,
+    "timezone": "GMT (UTC+0)",
+    "write_detail": true,
+    "generate_graph": true,
+    "tolerance_cm": 1.0
+  }
+}

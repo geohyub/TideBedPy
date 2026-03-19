@@ -1,0 +1,18 @@
+{
+  "name": "Minji_Taean",
+  "created": "2026-03-05 09:08:58",
+  "version": "2.1.0",
+  "settings": {
+    "nav_path": "C:/Users/JWONLINETEAM/Desktop/TideBed (2)/Sample/TideBed/Navi/Before",
+    "tide_path": "C:/Users/JWONLINETEAM/Desktop/TideBed (2)/Sample/TideBed/실측조위",
+    "output_path": "C:/Users/JWONLINETEAM/Desktop/TideBedPy/test_output/20260305Test/Minji.tid",
+    "db_path": "C:/Users/JWONLINETEAM/Desktop/TideBed (2)/info/표준개정수DB",
+    "station_path": "C:/Users/JWONLINETEAM/Desktop/TideBed (2)/info/표준개정수DB/기준항정보.txt",
+    "tide_type": "실측",
+    "rank_limit": 3,
+    "time_interval": 10,
+    "timezone": "GMT (UTC+0)",
+    "write_detail": true,
+    "generate_graph": true
+  }
+}

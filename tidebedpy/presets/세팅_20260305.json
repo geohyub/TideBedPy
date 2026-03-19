@@ -1,0 +1,18 @@
+{
+  "name": "세팅_20260305",
+  "created": "2026-03-05 09:04:53",
+  "version": "2.1.0",
+  "settings": {
+    "nav_path": "",
+    "tide_path": "",
+    "output_path": "",
+    "db_path": "",
+    "station_path": "",
+    "tide_type": "실측",
+    "rank_limit": 10,
+    "time_interval": 0,
+    "timezone": "GMT (UTC+0)",
+    "write_detail": true,
+    "generate_graph": true
+  }
+}
