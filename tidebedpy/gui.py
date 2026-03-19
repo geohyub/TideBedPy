@@ -1201,7 +1201,7 @@ class TideBedGUI:
         self.status_var.set('대기 중')
         self.status_label.configure(fg=C_TEXT_SEC)
         self._toggle_validate()
-        self._toggle_api_mode()
+        self._toggle_api_row()
         self._auto_discover_paths()
         self._log('설정이 초기화되었습니다', 'info')
 
@@ -1591,7 +1591,7 @@ class TideBedGUI:
 
         # API 모드: 조위 폴더 대신 API 키 검증
         if self.use_api.get():
-            api_key = self.api_key_var.get().strip()
+            api_key = self.api_key.get().strip()
             if not api_key:
                 errors.append('API 자동 수집 모드에서는 API 키가 필요합니다.')
         else:
@@ -2003,13 +2003,24 @@ class TideBedGUI:
             self._finish(False, f'오류: {str(e)}')
 
     def _set_inputs_locked(self, locked: bool):
-        """처리 중 입력 위젯 활성화/비활성화."""
-        state = DISABLED if locked else NORMAL
-        for widget in getattr(self, '_lockable_widgets', []):
-            try:
-                widget.configure(state=state)
-            except Exception:
-                pass
+        """처리 중 입력 위젯 활성화/비활성화 (원래 상태 저장/복원)."""
+        if locked:
+            # 현재 상태 저장 후 비활성화
+            self._widget_saved_states = {}
+            for widget in getattr(self, '_lockable_widgets', []):
+                try:
+                    self._widget_saved_states[widget] = str(widget.cget('state'))
+                    widget.configure(state=DISABLED)
+                except Exception:
+                    pass
+        else:
+            # 저장된 원래 상태로 복원
+            for widget, orig_state in getattr(self, '_widget_saved_states', {}).items():
+                try:
+                    widget.configure(state=orig_state)
+                except Exception:
+                    pass
+            self._widget_saved_states = {}
 
     def _finish(self, success: bool, msg: str = None):
         def _update():

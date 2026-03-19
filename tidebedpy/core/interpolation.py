@@ -138,7 +138,9 @@ def compute_idw_weights_batch(nav_lons: np.ndarray, nav_lats: np.ndarray,
         for j in range(n_st):
             dist = vincenty_inverse(nav_lons[i], nav_lats[i],
                                      station_lons[j], station_lats[j])
-            if dist <= 0:
+            if dist < 0:
+                continue  # 거리 계산 실패 → 제외
+            if dist == 0:
                 dist = 0.001
             inv_d2 = 1.0 / (dist * dist)
             sum_inv_d2 += inv_d2
