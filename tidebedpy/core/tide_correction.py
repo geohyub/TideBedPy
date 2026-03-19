@@ -74,10 +74,10 @@ class TideCorrectionEngine:
     def _get_cotidal_cached(self, x: float, y: float):
         """
         Co-tidal 값을 캐시와 함께 조회한다.
-        동일 섹터(0.001도 해상도) 내 반복 조회를 최적화.
+        동일 섹터(0.00001도 ≈ 1m 해상도) 내 반복 조회를 최적화.
         """
-        # 캐시 키: 0.001도 해상도로 양자화
-        cache_key = (round(x, 3), round(y, 3))
+        # 캐시 키: 0.00001도 해상도로 양자화 (그리드 해상도 1/12000° ≈ 0.000083°에 근접)
+        cache_key = (round(x, 5), round(y, 5))
         if cache_key in self._sector_cache:
             return self._sector_cache[cache_key]
 
@@ -117,15 +117,15 @@ class TideCorrectionEngine:
 
         spr_range, msl, mhwi = cotidal_result
 
-        # MHWI 유효성 검사
+        # Co-tidal 값 유효성 검사 (NaN/inf 방어)
+        if any(math.isnan(v) or math.isinf(v) for v in (spr_range, msl, mhwi)):
+            logger.warning(f"Co-tidal NaN/inf 감지: spr={spr_range}, msl={msl}, mhwi={mhwi} "
+                           f"at ({nav.x:.4f}, {nav.y:.4f})")
+            return -999.0
+
         if abs(mhwi) > 1000000.0:
             logger.warning(f"MHWI 값 이상 ({mhwi}) at ({nav.x:.4f}, {nav.y:.4f})")
             return -999.0
-
-        # sprRange NaN 검사
-        if math.isnan(spr_range):
-            logger.warning(f"SprRange is NaN at ({nav.x:.4f}, {nav.y:.4f})")
-            return -999.9
 
         # Nav 포인트에 Co-tidal 값 저장
         nav.spr_range = spr_range

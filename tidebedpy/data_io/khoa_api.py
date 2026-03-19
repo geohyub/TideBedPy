@@ -261,6 +261,7 @@ def fetch_tide_range(api_key: str, obs_code: str,
     total_days = (dt_end - dt_start).days + 1
 
     all_data = []
+    fail_count = 0
 
     for i in range(total_days):
         day = dt_start + timedelta(days=i)
@@ -271,12 +272,20 @@ def fetch_tide_range(api_key: str, obs_code: str,
 
         try:
             items = fetch_tide_day(api_key, obs_code, day_str, minute)
-            all_data.extend(items)
+            if not items:
+                fail_count += 1
+                logger.warning(f"API 빈 응답 ({obs_code}, {day_str})")
+            else:
+                all_data.extend(items)
         except Exception as e:
+            fail_count += 1
             logger.warning(f"API 조회 실패 ({obs_code}, {day_str}): {e}")
             continue
 
         time.sleep(0.2)  # API 부하 방지
+
+    if fail_count > 0:
+        logger.warning(f"API 수집 경고: {obs_code} - {total_days}일 중 {fail_count}일 실패")
 
     return all_data
 

@@ -83,8 +83,11 @@ def compute_idw_weights(nav_lon: float, nav_lat: float,
 
     for i, st in enumerate(stations):
         dist = vincenty_inverse(nav_lon, nav_lat, st.longitude, st.latitude)
-        if dist <= 0:
-            dist = 0.001  # 0 방지 (동일 위치)
+        if dist < 0:
+            # 거리 계산 실패 (예: -9999.9) → 이 관측소 제외
+            continue
+        if dist == 0:
+            dist = 0.001  # 동일 위치 방지
         inv_d2 = 1.0 / (dist * dist)
         sum_inv_d2 += inv_d2
         weights.append(StationWeight(

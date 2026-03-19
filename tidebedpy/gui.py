@@ -492,6 +492,19 @@ class TideBedGUI:
         self._build_control_section(container)
         self._build_log_section(container)
 
+        # 처리 중 잠글 위젯 수집 (Entry, Combobox, Checkbutton)
+        self._lockable_widgets = []
+        for w in container.winfo_children():
+            self._collect_lockable(w)
+
+    def _collect_lockable(self, widget):
+        """재귀적으로 Entry, Combobox, Checkbutton 위젯을 수집."""
+        cls = widget.winfo_class()
+        if cls in ('Entry', 'TEntry', 'TCombobox', 'Checkbutton', 'TCheckbutton'):
+            self._lockable_widgets.append(widget)
+        for child in widget.winfo_children():
+            self._collect_lockable(child)
+
     # ────────────────────────────────────────────
     #  섹션 1: 입력 파일 설정
     # ────────────────────────────────────────────
@@ -1183,10 +1196,12 @@ class TideBedGUI:
         self.generate_graph.set(True)
         self.tolerance_cm.set(1.0)
         self.do_validate.set(False)
+        self.use_api.set(False)
         self.progress_var.set(0)
         self.status_var.set('대기 중')
         self.status_label.configure(fg=C_TEXT_SEC)
         self._toggle_validate()
+        self._toggle_api_mode()
         self._auto_discover_paths()
         self._log('설정이 초기화되었습니다', 'info')
 
@@ -1574,11 +1589,17 @@ class TideBedGUI:
         elif not os.path.isdir(nav):
             errors.append(f'항적 폴더를 찾을 수 없습니다: {nav}')
 
-        tide = self.tide_path.get().strip()
-        if not tide:
-            errors.append('조위 시계열 폴더가 지정되지 않았습니다.')
-        elif not os.path.isdir(tide):
-            errors.append(f'조위 폴더를 찾을 수 없습니다: {tide}')
+        # API 모드: 조위 폴더 대신 API 키 검증
+        if self.use_api.get():
+            api_key = self.api_key_var.get().strip()
+            if not api_key:
+                errors.append('API 자동 수집 모드에서는 API 키가 필요합니다.')
+        else:
+            tide = self.tide_path.get().strip()
+            if not tide:
+                errors.append('조위 시계열 폴더가 지정되지 않았습니다.')
+            elif not os.path.isdir(tide):
+                errors.append(f'조위 폴더를 찾을 수 없습니다: {tide}')
 
         output = self.output_path.get().strip()
         if not output:
@@ -1618,6 +1639,7 @@ class TideBedGUI:
         self.run_btn.configure(state=DISABLED, bg='#95a5a6')
         self.stop_btn.configure(state=NORMAL)
         self.progress_var.set(0)
+        self._set_inputs_locked(True)
 
         self.log_text.configure(state=NORMAL)
         self.log_text.delete('1.0', END)
@@ -1980,9 +2002,19 @@ class TideBedGUI:
                     pass
             self._finish(False, f'오류: {str(e)}')
 
+    def _set_inputs_locked(self, locked: bool):
+        """처리 중 입력 위젯 활성화/비활성화."""
+        state = DISABLED if locked else NORMAL
+        for widget in getattr(self, '_lockable_widgets', []):
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
+
     def _finish(self, success: bool, msg: str = None):
         def _update():
             self.is_running = False
+            self._set_inputs_locked(False)
             self.run_btn.configure(state=NORMAL, bg=C_ACCENT)
             self.stop_btn.configure(state=DISABLED)
             if success:
