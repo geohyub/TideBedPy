@@ -178,15 +178,23 @@ class CoTidalGrid:
             ct_dir = os.path.dirname(path)
             # 임시 디렉토리에 junction 생성
             tmp_link = os.path.join(tempfile.gettempdir(), 'tidebedpy_ct')
-            if os.path.exists(tmp_link):
-                # 기존 링크 제거
+            if os.path.islink(tmp_link):
+                # symlink만 제거 (원본 건드리지 않음)
+                try:
+                    os.unlink(tmp_link)
+                except OSError:
+                    pass
+            elif os.path.isdir(tmp_link):
+                # 실제 디렉토리이면 비어있을 때만 제거
+                try:
+                    os.rmdir(tmp_link)  # 비어있어야만 성공
+                except OSError:
+                    pass  # 비어있지 않으면 무시, 절대 rmtree 사용 안 함
+            elif os.path.exists(tmp_link):
                 try:
                     os.remove(tmp_link)
-                except:
-                    try:
-                        os.rmdir(tmp_link)
-                    except:
-                        pass
+                except OSError:
+                    pass
             try:
                 os.symlink(ct_dir, tmp_link, target_is_directory=True)
                 self._ascii_ct_dir = tmp_link

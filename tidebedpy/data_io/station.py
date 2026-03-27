@@ -126,7 +126,7 @@ def load_stations(file_path: str) -> List[RefStation]:
 
         except (ValueError, IndexError) as e:
             skipped += 1
-            logger.warning(f"Line {i+1}: 파싱 오류 - {e}")
+            logger.debug(f"Line {i+1}: 파싱 오류 - {e}")
             continue
 
     logger.info(f"기준항 로드 완료: {len(stations)}개 활성 / {skipped}개 스킵 ({file_path})")

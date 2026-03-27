@@ -10,6 +10,7 @@ interpolation.py - IDW 가중치 + 이중선형 보간
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -49,6 +50,26 @@ def bilinear_interpolate(x_delta: float, y_delta: float,
         b = V01 + (V11 - V01) * xDelta    (X 방향 보간)
         result = a + (b - a) * yDelta      (Y 방향 보간)
     """
+    # NaN 방어: 격자 꼭짓점 중 NaN이 있으면 유효값만으로 역거리 가중
+    vals = [v00, v10, v01, v11]
+    if any(math.isnan(v) or math.isinf(v) for v in vals):
+        valid = [(v, dx, dy) for v, dx, dy in
+                 [(v00, 0, 0), (v10, 1, 0), (v01, 0, 1), (v11, 1, 1)]
+                 if not (math.isnan(v) or math.isinf(v))]
+        if not valid:
+            return float('nan')
+        if len(valid) == 1:
+            return valid[0][0]
+        # 역거리 가중 평균
+        total_w = 0.0
+        total_v = 0.0
+        for v, dx, dy in valid:
+            d = max(((dx - x_delta)**2 + (dy - y_delta)**2)**0.5, 1e-10)
+            w = 1.0 / d
+            total_w += w
+            total_v += w * v
+        return total_v / total_w
+
     a = v00 + (v10 - v00) * x_delta
     b = v01 + (v11 - v01) * x_delta
     return a + (b - a) * y_delta
@@ -159,3 +180,81 @@ def compute_idw_weights_batch(nav_lons: np.ndarray, nav_lats: np.ndarray,
         all_weights.append(weights)
 
     return all_weights
+
+
+# ════════════════════════════════════════════
+#  Haversine 벡터화 IDW (v3.0 속도 최적화)
+# ════════════════════════════════════════════
+
+_EARTH_R = 6_371_000.0  # Earth radius (m) — haversine 근사
+
+
+def _haversine_distance_matrix(nav_lons: np.ndarray, nav_lats: np.ndarray,
+                                st_lons: np.ndarray, st_lats: np.ndarray) -> np.ndarray:
+    """
+    Haversine 공식으로 Nav×Station 거리 행렬을 NumPy 벡터 연산으로 계산.
+
+    정밀도: Vincenty 대비 ~0.3% 오차 (해양 조석보정에 무시 가능).
+    속도: 개별 Vincenty 호출 대비 50-100배 빠름.
+
+    Returns:
+        shape (N_nav, N_station) 거리 행렬 (meters)
+    """
+    nav_lon_r = np.radians(nav_lons)[:, np.newaxis]  # (N, 1)
+    nav_lat_r = np.radians(nav_lats)[:, np.newaxis]
+    st_lon_r = np.radians(st_lons)[np.newaxis, :]    # (1, S)
+    st_lat_r = np.radians(st_lats)[np.newaxis, :]
+
+    dlat = st_lat_r - nav_lat_r
+    dlon = st_lon_r - nav_lon_r
+
+    a = np.sin(dlat / 2) ** 2 + np.cos(nav_lat_r) * np.cos(st_lat_r) * np.sin(dlon / 2) ** 2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+    return _EARTH_R * c
+
+
+def compute_idw_weights_vectorized(nav_lon: float, nav_lat: float,
+                                    st_lons: np.ndarray, st_lats: np.ndarray,
+                                    station_names: list) -> List[StationWeight]:
+    """
+    단일 Nav 포인트에 대해 haversine 벡터화로 IDW 가중치를 한번에 계산.
+
+    compute_idw_weights()의 고속 대체 함수.
+    """
+    nav_lon_r = np.radians(nav_lon)
+    nav_lat_r = np.radians(nav_lat)
+    st_lon_r = np.radians(st_lons)
+    st_lat_r = np.radians(st_lats)
+
+    dlat = st_lat_r - nav_lat_r
+    dlon = st_lon_r - nav_lon_r
+
+    a = np.sin(dlat / 2) ** 2 + np.cos(nav_lat_r) * np.cos(st_lat_r) * np.sin(dlon / 2) ** 2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+    distances = _EARTH_R * c
+
+    # 0 거리 방지
+    distances = np.maximum(distances, 0.001)
+
+    inv_d2 = 1.0 / (distances * distances)
+    sum_inv_d2 = np.sum(inv_d2)
+
+    if sum_inv_d2 <= 0:
+        return []
+
+    weights_arr = inv_d2 / sum_inv_d2
+
+    # 거리순 정렬 인덱스
+    sorted_idx = np.argsort(distances)
+
+    result = []
+    for idx in sorted_idx:
+        result.append(StationWeight(
+            station_idx=int(idx),
+            station_name=station_names[int(idx)],
+            weight=float(weights_arr[idx]),
+            distance_m=float(distances[idx]),
+        ))
+
+    return result

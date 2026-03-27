@@ -116,7 +116,7 @@ def _read_shp_polygons(shp_path: str,
                         f.seek(rec_start + rec_len)
                         continue
 
-                    if st == 5:  # Polygon
+                    if st in (3, 5):  # Polyline or Polygon
                         bbox = struct.unpack('<4d', f.read(32))
                         # bbox = (xmin, ymin, xmax, ymax)
 
@@ -136,13 +136,24 @@ def _read_shp_polygons(shp_path: str,
                             x, y = struct.unpack('<2d', f.read(16))
                             points.append((x, y))
 
-                        # 파트별로 분리
+                        # 파트별로 분리 + point-level clip
                         for i in range(num_parts):
                             start = parts[i]
                             end = parts[i + 1] if i + 1 < num_parts else num_points
                             ring = points[start:end]
-                            if len(ring) >= 3:
-                                polygons.append(ring)
+                            if len(ring) < 3:
+                                continue
+                            if clip_bbox:
+                                rxs = [p[0] for p in ring]
+                                rys = [p[1] for p in ring]
+                                ring_xmin, ring_xmax = min(rxs), max(rxs)
+                                ring_ymin, ring_ymax = min(rys), max(rys)
+                                # Skip rings completely outside bbox
+                                if (ring_xmax < clip_bbox[0] or ring_xmin > clip_bbox[2] or
+                                    ring_ymax < clip_bbox[1] or ring_ymin > clip_bbox[3]):
+                                    continue
+                                # Do NOT filter individual points — this breaks polygon shapes
+                            polygons.append(ring)
                     else:
                         f.seek(rec_start + rec_len)
 

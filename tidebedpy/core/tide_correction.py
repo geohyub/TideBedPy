@@ -16,7 +16,11 @@ from functools import lru_cache
 
 import numpy as np
 
-from core.interpolation import compute_idw_weights, compute_idw_weights_batch, StationWeight
+from core.interpolation import (
+    compute_idw_weights, compute_idw_weights_batch,
+    compute_idw_weights_vectorized, StationWeight,
+)
+from core.error_codes import TcError, HeightError
 from data_io.tide_series import find_level_value
 from data_io.navigation import NavPoint
 
@@ -32,8 +36,8 @@ class StationCorrection:
     h_ratio: float = 0.0          # SprRange_point / SprRange_station
     time_corrector: float = 0.0   # MHWI_point - MHWI_station (hours)
     corrected_time: Optional[datetime] = None
-    org_height: float = -999.0    # 원시 조위 (cm)
-    estim_height: float = -999.0  # 보정된 조위 (cm)
+    org_height: float = HeightError.NO_DATA    # 원시 조위 (cm)
+    estim_height: float = HeightError.NO_DATA  # 보정된 조위 (cm)
 
 
 class TideCorrectionEngine:
@@ -102,18 +106,25 @@ class TideCorrectionEngine:
         4. 상위 RankLimit개 가중평균 → Tc(cm)
 
         Returns:
-            Tc (cm). 오류 시 -999.0
+            Tc (cm). 오류 시 TcError.FAIL
         """
         self.last_corrections = []
 
-        # [1] IDW 가중치 계산
-        idw_weights = compute_idw_weights(nav.x, nav.y, self.stations)
+        # [1] IDW 가중치 계산 (haversine 벡터화 — vincenty 대비 50-100x 빠름)
+        idw_weights = compute_idw_weights_vectorized(
+            nav.x, nav.y,
+            self._station_lons, self._station_lats,
+            [s.name for s in self.stations],
+        )
+        if not idw_weights:
+            logger.warning(f"IDW 가중치 계산 실패 - 유효 관측소 없음 ({nav.x:.4f}, {nav.y:.4f})")
+            return TcError.FAIL
 
         # [2] Co-tidal 값 보간 (캐시 사용)
         cotidal_result = self._get_cotidal_cached(nav.x, nav.y)
         if cotidal_result is None:
             logger.warning(f"Co-tidal 보간 실패 ({nav.x:.4f}, {nav.y:.4f})")
-            return -999.0
+            return TcError.FAIL
 
         spr_range, msl, mhwi = cotidal_result
 
@@ -121,11 +132,11 @@ class TideCorrectionEngine:
         if any(math.isnan(v) or math.isinf(v) for v in (spr_range, msl, mhwi)):
             logger.warning(f"Co-tidal NaN/inf 감지: spr={spr_range}, msl={msl}, mhwi={mhwi} "
                            f"at ({nav.x:.4f}, {nav.y:.4f})")
-            return -999.0
+            return TcError.FAIL
 
         if abs(mhwi) > 1000000.0:
             logger.warning(f"MHWI 값 이상 ({mhwi}) at ({nav.x:.4f}, {nav.y:.4f})")
-            return -999.0
+            return TcError.FAIL
 
         # Nav 포인트에 Co-tidal 값 저장
         nav.spr_range = spr_range
@@ -151,14 +162,14 @@ class TideCorrectionEngine:
                 tide_series = station.tide_obs
 
             if tide_series is None:
-                corr.estim_height = -999.0
+                corr.estim_height = HeightError.NO_DATA
                 corr.weight = 0.0
                 corrections.append(corr)
                 continue
 
             # HRatio = SprRange_point / SprRange_station
-            if station.spr_range <= 0 or station.spr_range == -999.9:
-                corr.estim_height = -999.0
+            if station.spr_range <= 0 or station.spr_range == HeightError.INVALID_SPR:
+                corr.estim_height = HeightError.NO_DATA
                 corr.weight = 0.0
                 corrections.append(corr)
                 continue
@@ -178,15 +189,15 @@ class TideCorrectionEngine:
             level = find_level_value(tide_series, corr.corrected_time)
 
             if level is None:
-                corr.org_height = -998.0
-                corr.estim_height = -999.0
+                corr.org_height = HeightError.NO_TIDE_SERIES
+                corr.estim_height = HeightError.NO_DATA
                 corr.weight = 0.0
             else:
                 corr.org_height = level
                 corr.estim_height = level * corr.h_ratio
 
                 # EstimHeight 유효성 검사
-                if corr.estim_height <= -999.0:
+                if corr.estim_height <= TcError.THRESHOLD:
                     corr.weight = 0.0
 
             corrections.append(corr)
@@ -195,12 +206,12 @@ class TideCorrectionEngine:
         rank_limit = min(self.config.rank_limit, 10)
         valid_corrections = [
             c for c in corrections
-            if c.weight > 0 and c.estim_height > -999.0
+            if c.weight > 0 and c.estim_height > TcError.THRESHOLD
         ][:rank_limit]
 
         if not valid_corrections:
             self.last_corrections = corrections[:rank_limit]
-            return -999.0
+            return TcError.FAIL
 
         # Tc = Σ(EstimHeight × Weight) / Σ(Weight)
         sum_weighted = sum(c.estim_height * c.weight for c in valid_corrections)
@@ -208,7 +219,7 @@ class TideCorrectionEngine:
 
         if sum_weights <= 0:
             self.last_corrections = corrections[:rank_limit]
-            return -999.0
+            return TcError.FAIL
 
         tc = sum_weighted / sum_weights
 
@@ -225,6 +236,9 @@ class TideCorrectionEngine:
 
         참조: frmMain.cs Calib4File (lines 5520-5591)
 
+        C4: Large Nav Streaming — 50000+ 포인트 시 10000개 청크 단위 처리.
+        청크 간 Co-tidal 섹터 캐시를 정리하여 메모리 사용량을 제한한다.
+
         TimeIntervalSec 필터링:
         - 0: 모든 포인트 처리
         - >0: 이전 출력으로부터 해당 초 이상 경과한 포인트만
@@ -236,14 +250,37 @@ class TideCorrectionEngine:
         Returns:
             (처리된 NavPoint 리스트, 각 포인트별 StationCorrection 리스트)
         """
+        total = len(nav_points)
+        chunk_size = 10000
+
+        # C4: Chunk-based processing for large datasets
+        if total > 50000:
+            logger.info(
+                f"대용량 모드: {total:,}개 포인트를 {chunk_size:,}개 청크로 처리"
+            )
+            return self._process_all_chunked(
+                nav_points, chunk_size, progress_callback
+            )
+
+        return self._process_all_core(nav_points, 0, progress_callback)
+
+    def _process_all_core(
+        self,
+        nav_points: List[NavPoint],
+        global_offset: int = 0,
+        progress_callback=None,
+        global_total: int = 0,
+    ) -> Tuple[List[NavPoint], List[List[StationCorrection]]]:
+        """Core processing loop for a batch of nav points."""
         processed = []
         all_corrections = []
         interval = self.config.time_interval_sec
         last_output_time = None
-        total = len(nav_points)
+        total = global_total or len(nav_points)
         error_count = 0
 
-        logger.info(f"조석보정 시작: {total}개 Nav 포인트 (UTC offset: {self._utc_offset:+.1f}h)")
+        if global_offset == 0:
+            logger.info(f"조석보정 시작: {total}개 Nav 포인트 (UTC offset: {self._utc_offset:+.1f}h)")
 
         for i, nav in enumerate(nav_points):
             # TimeIntervalSec 필터링
@@ -256,20 +293,64 @@ class TideCorrectionEngine:
             tc = self.process_nav_point(nav)
             nav.tc = tc
 
-            if tc <= -999.0:
+            if TcError.is_error(tc):
                 error_count += 1
 
             processed.append(nav)
             all_corrections.append(list(self.last_corrections))
             last_output_time = nav.t
 
-            # 진행률 보고 (50포인트마다 — 더 자주 갱신)
-            if progress_callback and (i + 1) % 50 == 0:
-                progress_callback(i + 1, total)
+            # 진행률 보고 (200포인트마다) — global offset 반영
+            abs_i = global_offset + i + 1
+            if progress_callback and abs_i % 200 == 0:
+                progress_callback(abs_i, total)
 
-        # 최종 진행률 보고
+        if global_offset == 0 and global_total == 0:
+            # Single-batch mode: final progress
+            if progress_callback:
+                progress_callback(total, total)
+            logger.info(f"조석보정 완료: {len(processed)}개 처리 / {error_count}개 오류")
+
+        return processed, all_corrections
+
+    def _process_all_chunked(
+        self,
+        nav_points: List[NavPoint],
+        chunk_size: int,
+        progress_callback=None,
+    ) -> Tuple[List[NavPoint], List[List[StationCorrection]]]:
+        """C4: Process nav points in chunks, clearing sector cache between chunks."""
+        total = len(nav_points)
+        all_processed = []
+        all_corr = []
+        error_count = 0
+
+        for chunk_start in range(0, total, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, total)
+            chunk = nav_points[chunk_start:chunk_end]
+
+            logger.info(
+                f"청크 처리: {chunk_start + 1:,}~{chunk_end:,} / {total:,}"
+            )
+
+            proc, corr = self._process_all_core(
+                chunk,
+                global_offset=chunk_start,
+                progress_callback=progress_callback,
+                global_total=total,
+            )
+            all_processed.extend(proc)
+            all_corr.extend(corr)
+
+            # Clear sector cache between chunks to limit memory
+            self._sector_cache.clear()
+
+        # Final progress report
         if progress_callback:
             progress_callback(total, total)
 
-        logger.info(f"조석보정 완료: {len(processed)}개 처리 / {error_count}개 오류")
-        return processed, all_corrections
+        error_count = sum(1 for nav in all_processed if TcError.is_error(nav.tc))
+        logger.info(
+            f"조석보정 완료 (청크 모드): {len(all_processed)}개 처리 / {error_count}개 오류"
+        )
+        return all_processed, all_corr

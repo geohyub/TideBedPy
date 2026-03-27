@@ -8,6 +8,7 @@ geographiclib 라이브러리 사용 (deprecated geopy.vincenty 대체).
 """
 
 from geographiclib.geodesic import Geodesic
+from core.error_codes import DistError
 
 # WGS84 타원체 (C# 원본: Ellipsoid.WGS84)
 # a = 6,378,137 m, 1/f = 298.257223563
@@ -28,10 +29,10 @@ def vincenty_inverse(lon1: float, lat1: float,
         lon2, lat2: 두 번째 점의 경도, 위도 (degrees)
 
     Returns:
-        측지 거리 (meters). 오류 시 -9999.9
+        측지 거리 (meters). 오류 시 DistError.FAIL
     """
     try:
         result = _geod.Inverse(lat1, lon1, lat2, lon2)
         return result['s12']  # 거리 (meters)
     except Exception:
-        return -9999.9
+        return DistError.FAIL
