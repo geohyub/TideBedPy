@@ -7,6 +7,7 @@ Auto-loads after correction completion AND supports manual TID file loading.
 import os
 import sys
 import logging
+import html
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -258,7 +259,7 @@ class ViewerPanel(QWidget):
         self._file_rows: List[PathRow] = []
         for i in range(3):
             row = PathRow(
-                f"File {i + 1}",
+                f"파일 {i + 1}",
                 hint="TID 파일 경로를 입력하거나 탐색하세요",
                 mode="file",
                 file_filter="TID (*.tid);;All (*.*)",
@@ -353,8 +354,8 @@ class ViewerPanel(QWidget):
                 ax.setTextPen(pg.mkPen(Dark.MUTED))
                 ax.setTickFont(tick_font)
             label_style = {"font-size": "11px", "color": Dark.TEXT}
-            plot_item.setLabel("bottom", "Longitude", units=None, **label_style)
-            plot_item.setLabel("left", "Latitude", units=None, **label_style)
+            plot_item.setLabel("bottom", "경도", units=None, **label_style)
+            plot_item.setLabel("left", "위도", units=None, **label_style)
             plot_item.setAspectLocked(False)
             layout.addWidget(self._map_widget, 1)
         else:
@@ -384,7 +385,7 @@ class ViewerPanel(QWidget):
             plot_item.getAxis("left").setPen(pg.mkPen(GRID_COLOR))
             plot_item.getAxis("bottom").setTextPen(pg.mkPen(Dark.MUTED))
             plot_item.getAxis("left").setTextPen(pg.mkPen(Dark.MUTED))
-            plot_item.setLabel("left", "Count")
+            plot_item.setLabel("left", "빈도")
             plot_item.setLabel("bottom", "Tc (cm)")
             layout.addWidget(self._hist_widget, 1)
         else:
@@ -401,6 +402,21 @@ class ViewerPanel(QWidget):
         layout.setContentsMargins(Space.BASE, Space.SM, Space.BASE, Space.SM)
         layout.setSpacing(Space.SM)
         layout.addLayout(self._card_header("통계 요약"))
+
+        self._summary_story = QLabel()
+        self._summary_story.setWordWrap(True)
+        self._summary_story.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._summary_story.setStyleSheet(f"""
+            QLabel {{
+                background: {Dark.BG_ALT};
+                color: {Dark.TEXT};
+                font-size: {Font.SM}px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: {Radius.SM}px;
+                padding: 10px 12px;
+            }}
+        """)
+        layout.addWidget(self._summary_story)
 
         self._stats_grid = QGridLayout()
         self._stats_grid.setSpacing(Space.SM)
@@ -488,6 +504,8 @@ class ViewerPanel(QWidget):
         except Exception as e:
             logger.error(f"통계 요약 오류: {e}")
 
+        self._populate_summary_story(viz_data.get("summary"))
+
         # Switch to first visualization tab
         self._switch_tab(0)
 
@@ -497,13 +515,19 @@ class ViewerPanel(QWidget):
 
     def _load_files(self):
         """Load TID files from PathRow inputs and display charts/stats."""
-        from tidebedpy.output.report import parse_tid_data
+        try:
+            from tidebedpy.output.report import parse_tid_data_cm
+            from tidebedpy.output.summary import load_summary_file
+        except ImportError:
+            from output.report import parse_tid_data_cm
+            from output.summary import load_summary_file
 
         all_series = []
+        primary_path = ""
         for row in self._file_rows:
             path = row.text().strip()
             if path and os.path.isfile(path):
-                raw = parse_tid_data(path)
+                raw = parse_tid_data_cm(path)
                 times = []
                 values = []
                 for t_str, tc_val in raw:
@@ -514,6 +538,8 @@ class ViewerPanel(QWidget):
                     except (ValueError, TypeError):
                         continue
                 if times:
+                    if not primary_path:
+                        primary_path = path
                     all_series.append((os.path.basename(path), times, values))
 
         if not all_series:
@@ -558,10 +584,114 @@ class ViewerPanel(QWidget):
 
         # ── 5. Stats grid ──
         self._populate_stats_from_files(all_series)
+        file_summary = load_summary_file(primary_path) if primary_path else None
+        if not file_summary:
+            file_summary = self._build_fallback_summary(primary_path, name0, times0, values0)
+        self._populate_summary_story(file_summary)
 
     # ══════════════════════════════════════════════════════════
     #  Chart population helpers
     # ══════════════════════════════════════════════════════════
+
+    def _populate_summary_story(self, summary: Optional[dict]):
+        """Render the shared run summary in the statistics tab."""
+        if not hasattr(self, "_summary_story"):
+            return
+
+        if not summary:
+            self._summary_story.setText(
+                "이 결과에는 아직 실행 요약이 없습니다. 현재는 TID 파일에서 읽은 차트와 통계만 표시합니다."
+            )
+            return
+
+        story = summary.get("story", {})
+        settings = summary.get("settings", {})
+        lines = []
+
+        headline = summary.get("headline", "").strip()
+        if headline:
+            lines.append(f"<b>{html.escape(headline)}</b>")
+
+        preset_name = str(settings.get("preset_name", "")).strip()
+        preset_summary = str(settings.get("preset_summary", "")).strip()
+        if preset_name and preset_summary:
+            lines.append(
+                f"<b>프리셋</b>: {html.escape(preset_name)} - {html.escape(preset_summary)}"
+            )
+        elif preset_name:
+            lines.append(f"<b>프리셋</b>: {html.escape(preset_name)}")
+        elif preset_summary:
+            lines.append(f"<b>프리셋</b>: {html.escape(preset_summary)}")
+
+        for section_name in ("workflow", "rationale", "quality", "stations"):
+            section_lines = story.get(section_name, [])
+            if section_lines:
+                lines.append(html.escape(section_lines[0]))
+
+        contributors = summary.get("contributors", [])[:3]
+        if contributors:
+            contributor_text = ", ".join(
+                f"{item['station_name']} ({item['coverage_pct']:.1f}%, w {item['avg_weight']:.3f})"
+                for item in contributors
+            )
+            lines.append(f"주요 기준항: {html.escape(contributor_text)}")
+
+        guidance = story.get("guidance", [])[:2]
+        for guidance_line in guidance:
+            lines.append(f"읽는 방법: {html.escape(guidance_line)}")
+
+        generated_files = summary.get("generated_files", [])[:4]
+        if generated_files:
+            file_text = ", ".join(os.path.basename(path) for path in generated_files)
+            lines.append(f"생성 파일: {html.escape(file_text)}")
+
+        self._summary_story.setText("<br>".join(lines))
+
+    def _build_fallback_summary(
+        self,
+        file_path: str,
+        name: str,
+        times: List[datetime],
+        values: List[float],
+    ) -> dict:
+        """Create a minimal summary when a sidecar summary file is absent."""
+        min_val = min(values) if values else 0.0
+        max_val = max(values) if values else 0.0
+        mean_val = sum(values) / len(values) if values else 0.0
+        return {
+            "headline": (
+                f"{name} 파일에는 요약 sidecar가 없어 TID 기반 임시 요약만 표시합니다."
+            ),
+            "generated_files": [file_path] if file_path else [],
+            "story": {
+                "workflow": [
+                    (
+                        f"TID 파일 '{os.path.basename(file_path) if file_path else name}'에는 "
+                        f"{len(values):,}개 레코드가 있으며, 시간 범위는 "
+                        f"{times[0].strftime('%Y-%m-%d %H:%M:%S')} 부터 "
+                        f"{times[-1].strftime('%Y-%m-%d %H:%M:%S')} 까지입니다."
+                    )
+                    if times
+                    else "유효한 시간 범위를 확인할 수 없습니다."
+                ],
+                "rationale": [
+                    "이 TID 출력 옆에 .summary.json 파일이 없어 원래 실행 맥락을 확인할 수 없습니다."
+                ],
+                "quality": [
+                    (
+                        f"TID 단독 통계: 저장된 m 단위를 desktop cm 단위로 변환한 결과 평균 {mean_val:,.2f} cm, 범위 {min_val:,.2f} ~ {max_val:,.2f} cm입니다."
+                    )
+                ],
+                "stations": [
+                    "실행 요약 sidecar가 없어서 기준항 기여 정보는 확인할 수 없습니다."
+                ],
+                "guidance": [
+                    "수동 TID 보기에서는 저장된 m 값을 cm로 바꿔 live correction 화면과 같은 단위로 표시합니다.",
+                    "이 임시 화면은 크기 확인용으로 사용하고, 전체 보정 근거는 요약 sidecar 기준으로 해석하는 것이 좋습니다.",
+                ],
+            },
+            "contributors": [],
+        }
 
     def _populate_tide_chart(self, times: List[datetime], values: List[float]):
         """Fill tide correction time series chart."""

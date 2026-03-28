@@ -14,8 +14,10 @@ def parse_tid_data(file_path: str) -> List[Tuple[str, float]]:
     """
     .tid 파일에서 데이터 줄만 추출한다.
 
+    반환값의 Tc는 `.tid` 본문 단위 그대로 metres 이다.
+
     Returns:
-        [(time_str, tc_value), ...] 리스트
+        [(time_str, tc_m), ...] 리스트
     """
     data = []
     in_data = False
@@ -41,6 +43,11 @@ def parse_tid_data(file_path: str) -> List[Tuple[str, float]]:
                     except ValueError:
                         continue
     return data
+
+
+def parse_tid_data_cm(file_path: str) -> List[Tuple[str, float]]:
+    """`.tid` 데이터를 읽어 Tc를 centimetres 로 변환한다."""
+    return [(time_str, tc_m * 100.0) for time_str, tc_m in parse_tid_data(file_path)]
 
 
 def validate_output(generated_path: str, reference_path: str,
@@ -75,6 +82,7 @@ def validate_output(generated_path: str, reference_path: str,
         'matched': 0,
         'within_tolerance': 0,
         'exceeded_tolerance': 0,
+        'within_tolerance_pct': 0.0,
         'max_diff': 0.0,
         'mean_diff': 0.0,
         'mismatches': [],
@@ -103,6 +111,8 @@ def validate_output(generated_path: str, reference_path: str,
     if diffs:
         result['max_diff'] = max(diffs)
         result['mean_diff'] = sum(diffs) / len(diffs)
+        result['within_tolerance_pct'] = result['within_tolerance'] / len(diffs) * 100.0
+        result['mismatches'].sort(key=lambda item: item[3], reverse=True)
 
     return result
 
@@ -110,25 +120,26 @@ def validate_output(generated_path: str, reference_path: str,
 def print_validation_report(result: dict, tolerance: float = 0.01) -> None:
     """검증 결과를 출력한다."""
     print("\n" + "=" * 60)
-    print("  TideBedPy Validation Report")
+    print("  TideBedPy 검증 리포트")
     print("=" * 60)
-    print(f"  Generated records: {result['total_generated']}")
-    print(f"  Reference records: {result['total_reference']}")
-    print(f"  Matched records:   {result['matched']}")
-    print(f"  Within tolerance:  {result['within_tolerance']}")
-    print(f"  Exceeded tolerance:{result['exceeded_tolerance']}")
-    print(f"  Max difference:    {result['max_diff']:.4f} m")
-    print(f"  Mean difference:   {result['mean_diff']:.4f} m")
-    print(f"  Tolerance:         +/-{tolerance} m")
+    print(f"  생성 레코드 수:   {result['total_generated']}")
+    print(f"  참조 레코드 수:   {result['total_reference']}")
+    print(f"  매칭 레코드 수:   {result['matched']}")
+    print(f"  허용 범위 이내:   {result['within_tolerance']}")
+    print(f"  허용 범위 초과:   {result['exceeded_tolerance']}")
+    print(f"  허용 범위 이내 비율: {result.get('within_tolerance_pct', 0.0):.1f}%")
+    print(f"  최대 차이:        {result['max_diff']:.4f} m")
+    print(f"  평균 차이:        {result['mean_diff']:.4f} m")
+    print(f"  허용 오차:        +/-{tolerance} m")
 
     if result['exceeded_tolerance'] == 0 and result['matched'] > 0:
-        print(f"\n  [PASS] All {result['matched']} values within +/-{tolerance}m tolerance.")
+        print(f"\n  [PASS] 매칭된 {result['matched']}개 값이 모두 +/-{tolerance}m 허용 오차 안에 있습니다.")
     elif result['exceeded_tolerance'] > 0:
-        print(f"\n  [FAIL] {result['exceeded_tolerance']} values exceeded tolerance")
-        print(f"\n  Exceeded items (max 10):")
+        print(f"\n  [FAIL] {result['exceeded_tolerance']}개 값이 허용 오차를 초과했습니다.")
+        print(f"\n  허용 오차 초과 항목 (최대 10개):")
         for time_str, gen_val, ref_val, diff in result['mismatches'][:10]:
-            print(f"    {time_str}  gen={gen_val:.2f}  ref={ref_val:.2f}  diff={diff:.4f}")
+            print(f"    {time_str}  생성={gen_val:.2f}  참조={ref_val:.2f}  차이={diff:.4f}")
     else:
-        print(f"\n  [WARN] No matched records found.")
+        print(f"\n  [WARN] 매칭된 레코드를 찾지 못했습니다.")
 
     print("=" * 60 + "\n")

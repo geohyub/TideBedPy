@@ -3,6 +3,7 @@
 import os
 import sys
 import math
+import html
 from datetime import datetime
 
 from PySide6.QtCore import Qt
@@ -121,7 +122,7 @@ class ComparePanel(QWidget):
         # -- Input card --
         input_card, input_lay = _card("파일 선택")
 
-        self._path_a = PathRow("File A (.tid)", mode="file",
+        self._path_a = PathRow("파일 A (.tid)", mode="file",
                                file_filter="TID Files (*.tid);;All (*)")
         input_lay.addWidget(self._path_a)
 
@@ -129,7 +130,7 @@ class ComparePanel(QWidget):
         hint_a.setStyleSheet(f"color: {Dark.DIM}; font-size: {Font.XS}px; background: transparent; border: none;")
         input_lay.addWidget(hint_a)
 
-        self._path_b = PathRow("File B (.tid)", mode="file",
+        self._path_b = PathRow("파일 B (.tid)", mode="file",
                                file_filter="TID Files (*.tid);;All (*)")
         input_lay.addWidget(self._path_b)
 
@@ -199,6 +200,10 @@ class ComparePanel(QWidget):
 
         self._layout.addWidget(self._empty_state)
 
+        self._context_card, self._context_lay = _card("실행 맥락")
+        self._context_card.setVisible(False)
+        self._layout.addWidget(self._context_card)
+
         # -- Statistics card (hidden initially) --
         self._stats_card, self._stats_lay = _card("통계")
         self._stats_card.setVisible(False)
@@ -217,6 +222,42 @@ class ComparePanel(QWidget):
         self._diff_card.setVisible(False)
         self._layout.addWidget(self._diff_card)
 
+        self._mismatch_card, mismatch_lay = _card("주요 차이 시점")
+        self._mismatch_body = QLabel()
+        self._mismatch_body.setWordWrap(True)
+        self._mismatch_body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._mismatch_body.setStyleSheet(f"""
+            QLabel {{
+                background: {Dark.BG_ALT};
+                color: {Dark.TEXT};
+                font-size: {Font.SM}px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: {Radius.SM}px;
+                padding: 10px 12px;
+            }}
+        """)
+        mismatch_lay.addWidget(self._mismatch_body)
+        self._mismatch_card.setVisible(False)
+        self._layout.addWidget(self._mismatch_card)
+
+        self._contributors_card, contributors_lay = _card("기준항 커버리지")
+        self._contributors_body = QLabel()
+        self._contributors_body.setWordWrap(True)
+        self._contributors_body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._contributors_body.setStyleSheet(f"""
+            QLabel {{
+                background: {Dark.BG_ALT};
+                color: {Dark.TEXT};
+                font-size: {Font.SM}px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: {Radius.SM}px;
+                padding: 10px 12px;
+            }}
+        """)
+        contributors_lay.addWidget(self._contributors_body)
+        self._contributors_card.setVisible(False)
+        self._layout.addWidget(self._contributors_card)
+
         self._layout.addStretch()
 
         scroll.setWidget(content)
@@ -229,30 +270,38 @@ class ComparePanel(QWidget):
     def _run_compare(self):
         path_a = self._path_a.path()
         path_b = self._path_b.path()
+        self._reset_result_view()
 
         if not path_a or not os.path.isfile(path_a):
-            self._controller.toast_requested.emit("File A 경로를 확인하세요", "warning")
+            self._controller.toast_requested.emit("파일 A 경로를 확인하세요", "warning")
             return
         if not path_b or not os.path.isfile(path_b):
-            self._controller.toast_requested.emit("File B 경로를 확인하세요", "warning")
+            self._controller.toast_requested.emit("파일 B 경로를 확인하세요", "warning")
             return
 
         try:
-            from tidebedpy.output.report import parse_tid_data
+            from tidebedpy.output.report import parse_tid_data_cm
+            from tidebedpy.output.summary import load_summary_file
         except ImportError:
-            self._controller.toast_requested.emit(
-                "tidebedpy.output.report 임포트 실패", "error"
-            )
-            return
+            try:
+                from output.report import parse_tid_data_cm
+                from output.summary import load_summary_file
+            except ImportError:
+                self._controller.toast_requested.emit(
+                    "TID 비교 모듈을 불러오지 못했습니다.", "error"
+                )
+                return
 
-        data_a = parse_tid_data(path_a)
-        data_b = parse_tid_data(path_b)
+        data_a = parse_tid_data_cm(path_a)
+        data_b = parse_tid_data_cm(path_b)
+        summary_a = load_summary_file(path_a)
+        summary_b = load_summary_file(path_b)
 
         if not data_a:
-            self._controller.toast_requested.emit("File A 데이터 없음", "warning")
+            self._controller.toast_requested.emit("파일 A 데이터 없음", "warning")
             return
         if not data_b:
-            self._controller.toast_requested.emit("File B 데이터 없음", "warning")
+            self._controller.toast_requested.emit("파일 B 데이터 없음", "warning")
             return
 
         # Build time-keyed dicts
@@ -262,6 +311,12 @@ class ComparePanel(QWidget):
         # Match on common timestamps
         common_keys = sorted(set(dict_a.keys()) & set(dict_b.keys()))
         matched = len(common_keys)
+        total_a = len(dict_a)
+        total_b = len(dict_b)
+        union_count = len(set(dict_a.keys()) | set(dict_b.keys()))
+        a_only = max(total_a - matched, 0)
+        b_only = max(total_b - matched, 0)
+        overlap_pct = (matched / union_count * 100.0) if union_count else 0.0
 
         if matched == 0:
             self._controller.toast_requested.emit(
@@ -269,7 +324,7 @@ class ComparePanel(QWidget):
             )
             return
 
-        tolerance = 0.01  # meters
+        tolerance = self._resolve_compare_tolerance(summary_a, summary_b)
         diffs = []
         within = 0
         for key in common_keys:
@@ -285,15 +340,22 @@ class ComparePanel(QWidget):
 
         # Hide empty state, show results
         self._empty_state.setVisible(False)
+        self._populate_context_card(path_a, path_b, summary_a, summary_b)
+        self._populate_contributor_card(summary_a, summary_b)
 
         # -- Update statistics card --
         self._clear_stats()
-        self._stats_lay.addLayout(_stat_label("매칭 레코드", f"{matched:,}"))
-        self._stats_lay.addLayout(_stat_label("최대 차이", f"{max_diff:,.4f} m"))
-        self._stats_lay.addLayout(_stat_label("평균 차이", f"{mean_diff:,.4f} m"))
-        self._stats_lay.addLayout(_stat_label("RMS", f"{rms:,.4f} m"))
+        self._stats_lay.addLayout(_stat_label("파일 A 레코드", f"{total_a:,}"))
+        self._stats_lay.addLayout(_stat_label("파일 B 레코드", f"{total_b:,}"))
+        self._stats_lay.addLayout(_stat_label("공통 시점", f"{matched:,}"))
+        self._stats_lay.addLayout(_stat_label("겹침 비율", f"{overlap_pct:,.1f}%"))
+        self._stats_lay.addLayout(_stat_label("A 전용 시점", f"{a_only:,}"))
+        self._stats_lay.addLayout(_stat_label("B 전용 시점", f"{b_only:,}"))
+        self._stats_lay.addLayout(_stat_label("최대 차이", f"{max_diff:,.2f} cm"))
+        self._stats_lay.addLayout(_stat_label("평균 차이", f"{mean_diff:,.2f} cm"))
+        self._stats_lay.addLayout(_stat_label("RMS", f"{rms:,.2f} cm"))
         self._stats_lay.addLayout(
-            _stat_label(f"허용범위 이내 (+/-{tolerance}m)", f"{pct_within:,.1f}%")
+            _stat_label(f"허용 오차 이내 (+/-{tolerance:.2f} cm)", f"{pct_within:,.1f}%")
         )
         self._stats_card.setVisible(True)
 
@@ -309,24 +371,296 @@ class ComparePanel(QWidget):
             except ValueError:
                 continue
             times.append(dt)
-            vals_a.append(dict_a[key] * 100.0)   # m -> cm
-            vals_b.append(dict_b[key] * 100.0)
-            vals_diff.append((dict_a[key] - dict_b[key]) * 100.0)
+            vals_a.append(dict_a[key])
+            vals_b.append(dict_b[key])
+            vals_diff.append(dict_a[key] - dict_b[key])
 
         # -- Overlay chart --
         self._overlay_chart.clear()
-        self._overlay_chart.set_data(times, vals_a, label="File A")
-        self._overlay_chart.add_reference(times, vals_b, label="File B")
+        self._overlay_chart.set_data(times, vals_a, label=f"A: {os.path.basename(path_a)}")
+        self._overlay_chart.add_reference(times, vals_b, label=f"B: {os.path.basename(path_b)}")
         self._overlay_card.setVisible(True)
 
         # -- Difference chart --
         self._diff_chart.clear()
         self._diff_chart.set_data(times, vals_diff, label="A - B (cm)")
         self._diff_card.setVisible(True)
+        self._populate_mismatch_card(common_keys, dict_a, dict_b, tolerance)
 
         self._controller.toast_requested.emit(
             f"비교 완료: {matched:,}개 레코드 매칭", "success"
         )
+
+    def _populate_context_card(self, path_a: str, path_b: str,
+                               summary_a: dict | None, summary_b: dict | None):
+        """Show scenario context so value differences are easier to interpret."""
+        self._clear_context()
+
+        body = QLabel()
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setStyleSheet(f"""
+            QLabel {{
+                background: {Dark.BG_ALT};
+                color: {Dark.TEXT};
+                font-size: {Font.SM}px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: {Radius.SM}px;
+                padding: 10px 12px;
+            }}
+        """)
+
+        sections = [
+            self._context_html("시나리오 A", path_a, summary_a),
+            self._context_html("시나리오 B", path_b, summary_b),
+        ]
+
+        diff_lines = []
+        if summary_a and summary_b:
+            pairs = [
+                ("tide_model", "모델"),
+                ("timezone_offset_hours", "시간대"),
+                ("rank_limit", "선정 기준항 수"),
+                ("time_interval_sec", "간격"),
+                ("tolerance_cm", "허용 오차"),
+            ]
+            settings_a = summary_a.get("settings", {})
+            settings_b = summary_b.get("settings", {})
+            for key, label in pairs:
+                value_a = settings_a.get(key)
+                value_b = settings_b.get(key)
+                if value_a != value_b:
+                    diff_lines.append(f"{label}: {value_a} vs {value_b}")
+
+            input_a = summary_a.get("inputs", {})
+            input_b = summary_b.get("inputs", {})
+            for key, label in (("nav_name", "항적"), ("tide_name", "조위"), ("station_name", "기준항 파일")):
+                value_a = input_a.get(key)
+                value_b = input_b.get(key)
+                if value_a and value_b and value_a != value_b:
+                    diff_lines.append(f"{label}: {value_a} vs {value_b}")
+
+            preset_summary_a = settings_a.get("preset_summary")
+            preset_summary_b = settings_b.get("preset_summary")
+            if preset_summary_a and preset_summary_b and preset_summary_a != preset_summary_b:
+                diff_lines.append("프리셋 의미가 두 시나리오에서 다릅니다.")
+
+            contributors_a = summary_a.get("contributors", [])[:2]
+            contributors_b = summary_b.get("contributors", [])[:2]
+            if contributors_a and contributors_b:
+                lead_a = ", ".join(item["station_name"] for item in contributors_a)
+                lead_b = ", ".join(item["station_name"] for item in contributors_b)
+                if lead_a != lead_b:
+                    diff_lines.append(f"주요 기준항: {lead_a} vs {lead_b}")
+
+        if diff_lines:
+            sections.append(
+                "<b>차이의 주요 원인</b><br>" +
+                "<br>".join(html.escape(line) for line in diff_lines)
+            )
+        elif summary_a or summary_b:
+            sections.append(
+                "두 파일의 요약 sidecar 기준 실행 맥락은 대체로 비슷합니다. "
+                "그래도 값 차이가 크다면 조위 소스 커버리지, local 데이터 품질, 정확한 매칭 시점을 먼저 확인하세요."
+            )
+        else:
+            sections.append(
+                ".summary.json sidecar가 없어 값 자체의 차이만 비교할 수 있습니다."
+            )
+
+        body.setText("<br><br>".join(sections))
+        self._context_lay.addWidget(body)
+        self._context_card.setVisible(True)
+
+    def _context_html(self, title: str, path: str, summary: dict | None) -> str:
+        """Render one side of the compare context."""
+        if not summary:
+            return (
+                f"<b>{html.escape(title)}</b><br>"
+                f"파일: {html.escape(os.path.basename(path))}<br>"
+                ".summary.json sidecar를 찾지 못했습니다."
+            )
+
+        settings = summary.get("settings", {})
+        counts = summary.get("counts", {})
+        inputs = summary.get("inputs", {})
+        story = summary.get("story", {})
+        contributors = summary.get("contributors", [])[:2]
+        workflow = story.get("workflow", [])
+
+        lines = [
+            f"<b>{html.escape(title)}</b>",
+            f"파일: {html.escape(os.path.basename(path))}",
+            f"모델: {html.escape(str(settings.get('tide_model', '')))}",
+            f"시간대: {html.escape(str(settings.get('timezone_offset_hours', '')))} h",
+            f"선정 기준항 수: {html.escape(str(settings.get('rank_limit', '')))}",
+            f"처리 포인트: {counts.get('processed_nav_points', 0):,}",
+            f"유효 포인트: {counts.get('valid_points', 0):,}",
+        ]
+
+        if inputs.get("nav_name"):
+            lines.append(f"항적: {html.escape(str(inputs.get('nav_name')))}")
+        if inputs.get("tide_name"):
+            lines.append(f"조위: {html.escape(str(inputs.get('tide_name')))}")
+        if settings.get("preset_name"):
+            lines.append(f"프리셋: {html.escape(str(settings.get('preset_name')))}")
+        if settings.get("preset_summary"):
+            lines.append(f"프리셋 의미: {html.escape(str(settings.get('preset_summary')))}")
+        if contributors:
+            contributor_text = ", ".join(
+                f"{item['station_name']} ({item['coverage_pct']:.1f}%)"
+                for item in contributors
+            )
+            lines.append(f"주요 기준항: {html.escape(contributor_text)}")
+        if workflow:
+            lines.append(html.escape(workflow[0]))
+
+        return "<br>".join(lines)
+
+    def _populate_mismatch_card(
+        self,
+        common_keys: list[str],
+        dict_a: dict[str, float],
+        dict_b: dict[str, float],
+        tolerance_cm: float,
+    ) -> None:
+        """Show the most important timestamp-level mismatches."""
+        ranked = []
+        for key in common_keys:
+            diff_cm = dict_a[key] - dict_b[key]
+            ranked.append((abs(diff_cm), key, dict_a[key], dict_b[key], diff_cm))
+
+        ranked.sort(reverse=True)
+        top_items = ranked[:5]
+
+        if not top_items:
+            self._mismatch_body.setText("공통 시점 차이를 계산할 수 없습니다.")
+            self._mismatch_card.setVisible(True)
+            return
+
+        lines = [
+            (
+                f"<b>먼저 이 시점들을 확인하세요.</b><br>"
+                f"허용 오차: +/-{tolerance_cm:.2f} cm<br>"
+                f"절대 차이가 큰 순서대로 정렬했습니다."
+            )
+        ]
+        for _abs_diff, key, value_a, value_b, diff_cm in top_items:
+            lines.append(
+                f"<b>{html.escape(key)}</b><br>"
+                f"A: {value_a:+.2f} cm | "
+                f"B: {value_b:+.2f} cm | "
+                f"A-B: {diff_cm:+.2f} cm"
+            )
+
+        self._mismatch_body.setText("<br><br>".join(lines))
+        self._mismatch_card.setVisible(True)
+
+    def _build_contributor_rows(
+        self,
+        summary_a: dict | None,
+        summary_b: dict | None,
+        *,
+        limit: int = 5,
+    ) -> list[tuple[str, float, float]]:
+        """Build a side-by-side contributor table from two summaries."""
+        contributors_a = (summary_a or {}).get("contributors", [])
+        contributors_b = (summary_b or {}).get("contributors", [])
+        if not contributors_a and not contributors_b:
+            return []
+
+        ordered_names: list[str] = []
+        coverage_a: dict[str, float] = {}
+        coverage_b: dict[str, float] = {}
+
+        for item in contributors_a:
+            name = str(item.get("station_name", "")).strip()
+            if not name:
+                continue
+            coverage_a[name] = float(item.get("coverage_pct", 0.0))
+            if name not in ordered_names:
+                ordered_names.append(name)
+
+        for item in contributors_b:
+            name = str(item.get("station_name", "")).strip()
+            if not name:
+                continue
+            coverage_b[name] = float(item.get("coverage_pct", 0.0))
+            if name not in ordered_names:
+                ordered_names.append(name)
+
+        rows = [
+            (name, coverage_a.get(name, 0.0), coverage_b.get(name, 0.0))
+            for name in ordered_names
+        ]
+        rows.sort(key=lambda item: max(item[1], item[2]), reverse=True)
+        return rows[:limit]
+
+    def _populate_contributor_card(self, summary_a: dict | None, summary_b: dict | None) -> None:
+        """Show station contribution coverage side by side."""
+        rows = self._build_contributor_rows(summary_a, summary_b)
+        if not rows:
+            self._contributors_card.setVisible(False)
+            self._contributors_body.clear()
+            return
+
+        lines = [
+            "<b>시나리오별 기준항 기여 커버리지</b><br>"
+            "퍼센트가 높을수록 해당 기준항이 더 많은 보정 시점에 영향을 준 것입니다."
+        ]
+        for name, cov_a, cov_b in rows:
+            direction = "유사"
+            if abs(cov_a - cov_b) > 1e-9:
+                direction = "A 비중 큼" if cov_a > cov_b else "B 비중 큼"
+            lines.append(
+                f"<b>{html.escape(name)}</b><br>"
+                f"A: {cov_a:.1f}% | B: {cov_b:.1f}% | {direction}"
+            )
+
+        self._contributors_body.setText("<br><br>".join(lines))
+        self._contributors_card.setVisible(True)
+
+    def _clear_context(self):
+        while self._context_lay.count() > 1:
+            item = self._context_lay.takeAt(self._context_lay.count() - 1)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    def _resolve_compare_tolerance(self, summary_a: dict | None, summary_b: dict | None) -> float:
+        """Choose a compare tolerance in centimeters from available run summaries."""
+        tolerance_values = []
+        for summary in (summary_a, summary_b):
+            if not summary:
+                continue
+            value = summary.get("settings", {}).get("tolerance_cm")
+            try:
+                if value is not None:
+                    tolerance_values.append(float(value))
+            except (TypeError, ValueError):
+                continue
+
+        if len(tolerance_values) == 2 and abs(tolerance_values[0] - tolerance_values[1]) < 1e-9:
+            return tolerance_values[0]
+        if len(tolerance_values) == 1:
+            return tolerance_values[0]
+        return 1.0
+
+    def _reset_result_view(self) -> None:
+        """Hide stale comparison results before a new run."""
+        self._empty_state.setVisible(True)
+        self._context_card.setVisible(False)
+        self._stats_card.setVisible(False)
+        self._overlay_card.setVisible(False)
+        self._diff_card.setVisible(False)
+        self._mismatch_card.setVisible(False)
+        self._contributors_card.setVisible(False)
+        self._mismatch_body.clear()
+        self._contributors_body.clear()
+        self._overlay_chart.clear()
+        self._diff_chart.clear()
+        self._clear_context()
+        self._clear_stats()
 
     def _clear_stats(self):
         """Remove all stat rows from the stats card layout (keep the header)."""

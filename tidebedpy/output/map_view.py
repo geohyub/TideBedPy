@@ -21,6 +21,7 @@ try:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     import matplotlib.patheffects as pe
+    from matplotlib.colors import Normalize
     from matplotlib.ticker import AutoMinorLocator, FuncFormatter
     from matplotlib.collections import LineCollection
     import numpy as np
@@ -73,6 +74,7 @@ class _C:
     NAV_LINE   = '#1565C0'
     NAV_START  = '#2E7D32'
     NAV_END    = '#E65100'
+    ORANGE     = '#FB8C00'
     TEXT       = '#37474F'
     TITLE      = '#1A237E'
     FRAME      = '#90CAF9'
@@ -231,6 +233,173 @@ def _draw_compass(ax, x=0.96, y=0.94, size=0.06):
             path_effects=[pe.withStroke(linewidth=3, foreground='white')])
 
 
+def _load_summary_for_output(output_image: str) -> Optional[dict]:
+    """Resolve the TID base path from a map image path and load its summary."""
+    try:
+        from tidebedpy.output.summary import load_summary_file
+    except Exception:
+        try:
+            from output.summary import load_summary_file
+        except Exception:
+            return None
+
+    candidates = []
+    for suffix in ('.corrmap.png', '.map.png', '.compare.png', '.png'):
+        if output_image.endswith(suffix):
+            candidates.append(output_image[:-len(suffix)])
+
+    stem, _ = os.path.splitext(output_image)
+    candidates.append(stem)
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            summary = load_summary_file(candidate)
+        except Exception:
+            summary = None
+        if summary:
+            return summary
+    return None
+
+
+def _build_map_brief_lines(summary: Optional[dict], max_lines: int = 6) -> List[str]:
+    """Build short interpretation lines for map outputs."""
+    if not summary:
+        return []
+
+    lines: List[str] = []
+    headline = str(summary.get('headline', '')).strip()
+    if headline:
+        lines.append(headline)
+
+    settings = summary.get('settings', {})
+    preset_name = settings.get('preset_name')
+    preset_summary = settings.get('preset_summary')
+    if preset_name and preset_summary:
+        lines.append(f"프리셋: {preset_name} - {preset_summary}")
+    elif preset_name:
+        lines.append(f"프리셋: {preset_name}")
+    elif preset_summary:
+        lines.append(f"프리셋 의미: {preset_summary}")
+
+    story = summary.get('story', {})
+    for section_name in ('workflow', 'quality'):
+        section_lines = story.get(section_name, [])
+        if section_lines:
+            lines.append(str(section_lines[0]))
+
+    contributors = summary.get('contributors', [])[:2]
+    if contributors:
+        lines.append(
+            "주요 기준항: "
+            + ", ".join(
+                f"{item['station_name']} ({item['coverage_pct']:.1f}%)"
+                for item in contributors
+            )
+        )
+
+    guidance = story.get('guidance', [])
+    if guidance:
+        lines.append(f"읽는 방법: {guidance[0]}")
+
+    trimmed = []
+    for line in lines:
+        text = str(line).strip()
+        if not text:
+            continue
+        if len(text) > 130:
+            text = text[:127].rstrip() + '...'
+        trimmed.append(text)
+        if len(trimmed) >= max_lines:
+            break
+    return trimmed
+
+
+def _add_brief_box(ax, lines: List[str], *, loc: str = 'lower left') -> None:
+    """Add a compact interpretation box inside a map or chart."""
+    if not lines:
+        return
+
+    x = 0.98 if 'right' in loc else 0.02
+    ha = 'right' if 'right' in loc else 'left'
+    y = 0.98 if 'upper' in loc else 0.02
+    va = 'top' if 'upper' in loc else 'bottom'
+    ax.text(
+        x,
+        y,
+        '\n'.join(lines),
+        transform=ax.transAxes,
+        fontsize=8,
+        ha=ha,
+        va=va,
+        color=_C.TEXT,
+        bbox=dict(boxstyle='round,pad=0.55', fc='white', ec='#CCD7E0', alpha=0.95),
+        zorder=18,
+    )
+
+
+def _add_colored_track(ax, lons, lats, values, *, linewidth=2.2, alpha=0.65, zorder=4):
+    """Draw a continuous navigation track colored by Tc."""
+    if len(lons) < 2 or len(lats) < 2 or len(values) < 2:
+        return None
+
+    points = np.column_stack([lons, lats]).reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    track_values = np.asarray(values[:-1], dtype=float)
+    if track_values.size == 0:
+        return None
+
+    vmin = float(np.nanmin(track_values))
+    vmax = float(np.nanmax(track_values))
+    if np.isclose(vmin, vmax):
+        vmax = vmin + 1e-6
+
+    collection = LineCollection(
+        segments,
+        cmap='coolwarm',
+        norm=Normalize(vmin=vmin, vmax=vmax),
+        linewidths=linewidth,
+        alpha=alpha,
+        zorder=zorder,
+    )
+    collection.set_array(track_values)
+    ax.add_collection(collection)
+    return collection
+
+
+def _annotate_series_extrema(ax, times, values, *, unit='cm') -> None:
+    """Mark min/max points on a time-series panel."""
+    if not times or not values:
+        return
+
+    min_idx = int(np.argmin(values))
+    max_idx = int(np.argmax(values))
+    markers = [
+        (min_idx, '최소', _C.NAV_END, 'top'),
+        (max_idx, '최대', _C.NAV_START, 'bottom'),
+    ]
+
+    for idx, label, color, valign in markers:
+        ax.scatter([times[idx]], [values[idx]], color=color, s=26, zorder=6,
+                   edgecolors='white', linewidths=0.8)
+        offset = -16 if valign == 'top' else 12
+        ax.annotate(
+            f"{label}: {values[idx]:.1f} {unit}",
+            xy=(times[idx], values[idx]),
+            xytext=(8, offset),
+            textcoords='offset points',
+            fontsize=7.5,
+            color=color,
+            fontweight='bold',
+            bbox=dict(boxstyle='round,pad=0.25', fc='white', ec=color, alpha=0.9),
+            arrowprops=dict(arrowstyle='-', color=color, lw=0.8, alpha=0.7),
+            zorder=7,
+        )
+
+
 def _identify_used_stations(stations, nav_points, all_corrections=None,
                             threshold_deg=0.5):
     """
@@ -313,6 +482,7 @@ def generate_station_map(stations, nav_points=None,
 
     if output_image is None:
         output_image = 'station_map.png'
+    summary = _load_summary_for_output(output_image)
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     fig.patch.set_facecolor('white')
@@ -379,9 +549,13 @@ def generate_station_map(stations, nav_points=None,
     # ── 항적 플롯 ──
     if nav_lons:
         if nav_tc and any(t != 0 for t in nav_tc):
+            track = _add_colored_track(
+                ax, nav_lons, nav_lats, nav_tc,
+                linewidth=2.0, alpha=0.55, zorder=4,
+            )
             sc = ax.scatter(nav_lons, nav_lats, c=nav_tc, cmap='coolwarm',
                            s=4, alpha=0.7, zorder=5, edgecolors='none')
-            cbar = plt.colorbar(sc, ax=ax, shrink=0.6, pad=0.015, aspect=30)
+            cbar = plt.colorbar(track or sc, ax=ax, shrink=0.6, pad=0.015, aspect=30)
             cbar.set_label('조석보정값 Tc (cm)', fontsize=9, color=_C.TEXT)
             cbar.ax.tick_params(labelsize=7, colors='#666')
         else:
@@ -481,6 +655,7 @@ def generate_station_map(stations, nav_points=None,
            bbox=dict(boxstyle='round,pad=0.5', fc='white',
                     ec='#ccc', alpha=0.92),
            zorder=15)
+    _add_brief_box(ax, _build_map_brief_lines(summary), loc='lower left')
 
     # ── 프레임 ──
     for spine in ax.spines.values():
@@ -526,6 +701,7 @@ def generate_correction_map(stations, nav_points,
 
     if output_image is None:
         output_image = 'correction_map.png'
+    summary = _load_summary_for_output(output_image)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 13), dpi=dpi,
                                      height_ratios=[3, 1])
@@ -567,9 +743,13 @@ def generate_correction_map(stations, nav_points,
     _draw_coastline(ax1, view_bbox)
 
     # 항적 (Tc 컬러맵)
+    track = _add_colored_track(
+        ax1, nav_lons, nav_lats, nav_tc,
+        linewidth=2.4, alpha=0.65, zorder=4,
+    )
     sc = ax1.scatter(nav_lons, nav_lats, c=nav_tc, cmap='coolwarm',
                     s=5, alpha=0.7, zorder=5, edgecolors='none')
-    cbar = plt.colorbar(sc, ax=ax1, shrink=0.7, pad=0.015, aspect=30)
+    cbar = plt.colorbar(track or sc, ax=ax1, shrink=0.7, pad=0.015, aspect=30)
     cbar.set_label('Tc (cm)', fontsize=9, color=_C.TEXT)
     cbar.ax.tick_params(labelsize=7)
 
@@ -606,6 +786,7 @@ def generate_correction_map(stations, nav_points,
 
     mid_lat = (view_bbox[1] + view_bbox[3]) / 2
     ax1.set_aspect(1.0 / np.cos(np.radians(mid_lat)))
+    _add_brief_box(ax1, _build_map_brief_lines(summary), loc='lower left')
 
     _draw_compass(ax1)
 
@@ -614,6 +795,20 @@ def generate_correction_map(stations, nav_points,
     ax2.plot(times, nav_tc, color='#1976D2', linewidth=0.8, alpha=0.8)
     ax2.fill_between(times, nav_tc, alpha=0.12, color='#1976D2')
     ax2.axhline(y=0, color='#999', linewidth=0.5)
+    mean_tc = sum(nav_tc) / len(nav_tc)
+    ax2.axhline(y=mean_tc, color=_C.ORANGE, linewidth=0.9,
+                linestyle='--', alpha=0.7)
+    _annotate_series_extrema(ax2, times, nav_tc, unit='cm')
+
+    stats_lines = [
+        f"Samples: {len(nav_tc):,}",
+        f"Mean: {mean_tc:.1f} cm",
+        f"Range: {min(nav_tc):.1f} ~ {max(nav_tc):.1f} cm",
+    ]
+    ax2.text(0.02, 0.95, '\n'.join(stats_lines), transform=ax2.transAxes,
+             fontsize=8, va='top', ha='left',
+             bbox=dict(boxstyle='round,pad=0.45', fc='white',
+                       ec='#D6DEE5', alpha=0.94))
 
     ax2.set_title('시간별 조석보정값', fontsize=11, fontweight='bold',
                  pad=8, color=_C.TEXT)

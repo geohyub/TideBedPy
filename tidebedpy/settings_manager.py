@@ -16,6 +16,50 @@ logger = logging.getLogger(__name__)
 PRESETS_DIR_NAME = 'presets'
 
 
+def _build_preset_summary(settings: Dict) -> str:
+    """Create a compact, human-readable preset preview."""
+    parts = []
+
+    tide_model = settings.get('tide_model') or 'KHOA'
+    parts.append(str(tide_model))
+
+    tide_type = settings.get('tide_type')
+    if tide_type:
+        parts.append(str(tide_type))
+
+    timezone = settings.get('timezone')
+    if timezone:
+        parts.append(str(timezone))
+
+    rank_limit = settings.get('rank_limit')
+    if rank_limit:
+        parts.append(f"rank {rank_limit}")
+
+    interval = settings.get('time_interval')
+    if interval:
+        parts.append(f"{interval}s")
+
+    output_format = settings.get('output_format')
+    if output_format and output_format != 'TID':
+        parts.append(str(output_format))
+
+    tolerance_cm = settings.get('tolerance_cm')
+    if tolerance_cm and settings.get('do_validate'):
+        parts.append(f"+/-{tolerance_cm}cm")
+
+    flags = []
+    if settings.get('use_api'):
+        flags.append('API')
+    if settings.get('do_validate'):
+        flags.append('validate')
+    if settings.get('generate_graph'):
+        flags.append('graph')
+    if flags:
+        parts.append(", ".join(flags))
+
+    return " | ".join(parts)
+
+
 def _get_presets_dir(base_dir: str = None) -> str:
     """프리셋 디렉토리 경로를 반환하고, 없으면 생성한다."""
     if base_dir is None:
@@ -46,11 +90,17 @@ def save_preset(name: str, settings: Dict, base_dir: str = None) -> str:
 
     filepath = os.path.join(presets_dir, f'{safe_name}.json')
 
+    stored_settings = dict(settings)
+    stored_settings.pop('api_key', None)
+    stored_settings.pop('preset_name', None)
+    stored_settings.pop('preset_summary', None)
+
     preset_data = {
         'name': name,
         'created': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'version': '2.1.0',
-        'settings': settings,
+        'summary': _build_preset_summary(stored_settings),
+        'settings': stored_settings,
     }
 
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -104,6 +154,7 @@ def list_presets(base_dir: str = None) -> List[Dict]:
                 'name': data.get('name', fname),
                 'path': filepath,
                 'created': data.get('created', ''),
+                'summary': data.get('summary', ''),
                 'filename': fname,
             })
         except Exception:
@@ -111,6 +162,7 @@ def list_presets(base_dir: str = None) -> List[Dict]:
                 'name': fname,
                 'path': filepath,
                 'created': '',
+                'summary': '',
                 'filename': fname,
             })
 

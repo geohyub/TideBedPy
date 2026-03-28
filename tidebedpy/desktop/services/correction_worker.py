@@ -76,6 +76,8 @@ class CorrectionWorker(QObject):
             config.rank_limit = min(d.get("rank_limit", 10), 10)
             config.time_interval_sec = d.get("time_interval", 0)
             config.write_detail = d.get("write_detail", True)
+            config.model_dir = d.get("model_dir", "")
+            config.tolerance_cm = d.get("tolerance_cm", 1.0)
 
             utc_offset = d.get("utc_offset", 0.0)
             config.utc_offset = utc_offset
@@ -96,6 +98,10 @@ class CorrectionWorker(QObject):
             from tidebedpy.core.tide_correction import TideCorrectionEngine
             from tidebedpy.output.tid_writer import write_tid, write_detail, write_error
             from tidebedpy.output.report import validate_output
+            from tidebedpy.output.summary import build_run_summary, write_summary_files
+
+            matched = 0
+            validation_result = None
 
             # ── [1/7] Station info ──
             self.status.emit("기준항 정보 로드 중...")
@@ -385,6 +391,7 @@ class CorrectionWorker(QObject):
             # ── Graphs & maps ──
             generate_graph = d.get("generate_graph", True)
             tolerance_cm = d.get("tolerance_cm", 1.0)
+            tolerance_m = tolerance_cm / 100.0
 
             if generate_graph:
                 try:
@@ -461,7 +468,13 @@ class CorrectionWorker(QObject):
             # ── [7/7] Validation ──
             if config.validate_path and os.path.isfile(config.validate_path):
                 self.log.emit("[7/7]  검증 (참조 TID 비교)", "step")
-                result = validate_output(config.output_path, config.validate_path)
+                result = validate_output(
+                    config.output_path,
+                    config.validate_path,
+                    tolerance=tolerance_m,
+                )
+                validation_result = dict(result)
+                validation_result["tolerance_m"] = tolerance_m
                 self.log.emit(
                     f"  \u2192 생성: {result['total_generated']}개  "
                     f"/  참조: {result['total_reference']}개  "
@@ -500,6 +513,44 @@ class CorrectionWorker(QObject):
 
             # ── Done ──
             elapsed = time.time() - start_time
+            base_output = config.output_path.rsplit(".", 1)[0]
+            generated_files = [
+                path for path in [
+                    config.output_path,
+                    config.output_path + ".detail",
+                    config.output_path + ".err",
+                    base_output + ".csv",
+                    base_output + ".kingdom.txt",
+                    base_output + ".sonarwiz.txt",
+                    config.output_path + ".png",
+                    config.output_path + ".compare.png",
+                    config.output_path + ".map.png",
+                    config.output_path + ".corrmap.png",
+                ]
+                if path and os.path.isfile(path)
+            ]
+            summary = build_run_summary(
+                config,
+                nav_points,
+                processed,
+                stations,
+                all_corrections,
+                elapsed=elapsed,
+                tide_model=tide_model,
+                output_format=output_format,
+                db_version=db_ver,
+                validation=validation_result,
+                preset_name=d.get("preset_name", ""),
+                preset_summary=d.get("preset_summary", ""),
+                generated_files=generated_files,
+            )
+            summary_paths = write_summary_files(config.output_path, summary)
+            for summary_path in summary_paths.values():
+                self.log.emit(
+                    f"  \u2192 {os.path.basename(summary_path)}",
+                    "info",
+                )
+            generated_files.extend(summary_paths.values())
             self.log.emit("", "dim")
             self.log.emit("\u2501" * 56, "dim")
             self.log.emit(
@@ -507,15 +558,7 @@ class CorrectionWorker(QObject):
             )
             self.log.emit("\u2501" * 56, "dim")
 
-            for fp in [
-                config.output_path,
-                config.output_path + ".detail",
-                config.output_path + ".err",
-                config.output_path + ".png",
-                config.output_path + ".compare.png",
-                config.output_path + ".map.png",
-                config.output_path + ".corrmap.png",
-            ]:
+            for fp in generated_files:
                 if os.path.isfile(fp):
                     size_kb = os.path.getsize(fp) / 1024
                     self.log.emit(
@@ -542,6 +585,7 @@ class CorrectionWorker(QObject):
                     "output_path": config.output_path,
                     "elapsed": elapsed,
                     "rank_limit": d.get("rank_limit", 10),
+                    "summary": summary,
                 }
 
                 # Collect per-point station weights (sampled for performance)

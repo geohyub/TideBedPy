@@ -114,6 +114,348 @@ def parse_tid_for_graph(file_path: str) -> Tuple[List[datetime], List[float]]:
     return times, values
 
 
+def _load_run_summary(tid_path: str) -> Optional[dict]:
+    """Load a TideBedPy sidecar summary if one exists."""
+    try:
+        from tidebedpy.output.summary import load_summary_file
+    except Exception:
+        try:
+            from output.summary import load_summary_file
+        except Exception:
+            return None
+
+    try:
+        return load_summary_file(tid_path)
+    except Exception:
+        return None
+
+
+def _build_brief_lines(summary: Optional[dict], max_lines: int = 6) -> List[str]:
+    """Build short human-readable briefing lines for chart overlays."""
+    if not summary:
+        return []
+
+    lines: List[str] = []
+    headline = str(summary.get("headline", "")).strip()
+    if headline:
+        lines.append(headline)
+
+    settings = summary.get("settings", {})
+    preset_name = settings.get("preset_name")
+    preset_summary = settings.get("preset_summary")
+    if preset_name and preset_summary:
+        lines.append(f"프리셋: {preset_name} - {preset_summary}")
+    elif preset_name:
+        lines.append(f"프리셋: {preset_name}")
+    elif preset_summary:
+        lines.append(f"프리셋 의미: {preset_summary}")
+
+    story = summary.get("story", {})
+    for section_name in ("workflow", "quality", "stations"):
+        section_lines = story.get(section_name, [])
+        if section_lines:
+            lines.append(str(section_lines[0]))
+
+    guidance = story.get("guidance", [])
+    if guidance:
+        lines.append(f"읽는 방법: {guidance[0]}")
+
+    contributors = summary.get("contributors", [])[:2]
+    if contributors:
+        contributor_text = ", ".join(
+            f"{item['station_name']} ({item['coverage_pct']:.1f}%)"
+            for item in contributors
+        )
+        lines.append(f"주요 기준항: {contributor_text}")
+
+    trimmed = []
+    for line in lines:
+        text = str(line).strip()
+        if not text:
+            continue
+        if len(text) > 140:
+            text = text[:137].rstrip() + "..."
+        trimmed.append(text)
+        if len(trimmed) >= max_lines:
+            break
+    return trimmed
+
+
+def _build_compare_driver_lines(
+    summary_a: Optional[dict],
+    summary_b: Optional[dict],
+    tolerance_cm: float,
+    max_lines: int = 6,
+) -> List[str]:
+    """Build short compare-context lines that explain likely drivers."""
+    lines = [f"허용 오차: +/-{tolerance_cm:.2f} cm"]
+
+    if not summary_a or not summary_b:
+        lines.append("두 시나리오의 실행 요약을 모두 읽을 수 없었습니다.")
+        return lines
+
+    settings_a = summary_a.get("settings", {})
+    settings_b = summary_b.get("settings", {})
+    inputs_a = summary_a.get("inputs", {})
+    inputs_b = summary_b.get("inputs", {})
+
+    pairs = [
+        ("tide_model", "모델"),
+        ("timezone_offset_hours", "시간대"),
+        ("rank_limit", "선정 기준항 수"),
+        ("time_interval_sec", "간격"),
+    ]
+    for key, label in pairs:
+        value_a = settings_a.get(key)
+        value_b = settings_b.get(key)
+        if value_a != value_b:
+            lines.append(f"{label}: {value_a} vs {value_b}")
+
+    preset_summary_a = settings_a.get("preset_summary")
+    preset_summary_b = settings_b.get("preset_summary")
+    if preset_summary_a and preset_summary_b and preset_summary_a != preset_summary_b:
+        lines.append("프리셋 의미가 두 시나리오에서 다릅니다.")
+
+    contributors_a = summary_a.get("contributors", [])[:2]
+    contributors_b = summary_b.get("contributors", [])[:2]
+    if contributors_a and contributors_b:
+        lead_a = ", ".join(str(item.get("station_name", "")) for item in contributors_a)
+        lead_b = ", ".join(str(item.get("station_name", "")) for item in contributors_b)
+        if lead_a != lead_b:
+            lines.append(f"주요 기준항: {lead_a} vs {lead_b}")
+
+    for key, label in (("nav_name", "항적"), ("tide_name", "조위"), ("station_name", "기준항 파일")):
+        value_a = inputs_a.get(key)
+        value_b = inputs_b.get(key)
+        if value_a and value_b and value_a != value_b:
+            lines.append(f"{label}: {value_a} vs {value_b}")
+
+    if len(lines) == 1:
+        lines.append("시나리오 메타데이터는 대체로 유사합니다. residual 군집과 특정 시점 스파이크를 중점적으로 보세요.")
+
+    return lines[:max_lines]
+
+
+def _add_brief_box(ax, lines: List[str], *, loc: str = "upper right") -> None:
+    """Add a small text briefing box inside a chart."""
+    if not lines:
+        return
+
+    x = 0.98 if "right" in loc else 0.02
+    ha = "right" if "right" in loc else "left"
+    y = 0.98 if "upper" in loc else 0.02
+    va = "top" if "upper" in loc else "bottom"
+    ax.text(
+        x,
+        y,
+        "\n".join(lines),
+        transform=ax.transAxes,
+        fontsize=8,
+        ha=ha,
+        va=va,
+        color=_C.TEXT,
+        bbox=dict(boxstyle="round,pad=0.55", fc="white", ec=_C.GRID, alpha=0.95),
+        zorder=20,
+    )
+
+
+def _annotate_extrema(ax, times: List[datetime], values: List[float]) -> None:
+    """Mark min/max points so the reader can orient faster."""
+    if not times or not values:
+        return
+
+    min_idx = int(np.argmin(values))
+    max_idx = int(np.argmax(values))
+    extrema = [
+        (min_idx, "최소", _C.RED, "top"),
+        (max_idx, "최대", _C.GREEN, "bottom"),
+    ]
+
+    for idx, label, color, valign in extrema:
+        ax.scatter([times[idx]], [values[idx]], color=color, s=26, zorder=8, edgecolors="white", linewidths=0.8)
+        offset = -16 if valign == "top" else 12
+        ax.annotate(
+            f"{label}: {values[idx]:.3f} m",
+            xy=(times[idx], values[idx]),
+            xytext=(8, offset),
+            textcoords="offset points",
+            fontsize=7.5,
+            color=color,
+            fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.25", fc="white", ec=color, alpha=0.9),
+            arrowprops=dict(arrowstyle="-", color=color, lw=0.8, alpha=0.7),
+            zorder=9,
+        )
+
+
+def _add_contributor_inset(
+    ax,
+    summary: Optional[dict],
+    *,
+    loc: str = "lower left",
+    title: str = "주요 기준항",
+) -> None:
+    """Add a compact horizontal bar chart for top station contributors."""
+    contributors = (summary or {}).get("contributors", [])[:4]
+    if not contributors:
+        return
+
+    bounds = [0.03, 0.10, 0.26, 0.24] if "left" in loc else [0.71, 0.10, 0.26, 0.24]
+    inset = ax.inset_axes(bounds)
+
+    labels = [str(item.get("station_name", "")) for item in contributors][::-1]
+    values = [float(item.get("coverage_pct", 0.0)) for item in contributors][::-1]
+    inset.barh(range(len(values)), values, color=_C.BLUE_LIGHT, edgecolor=_C.BLUE, alpha=0.95)
+    inset.set_yticks(range(len(values)))
+    inset.set_yticklabels(labels, fontsize=6.5, color=_C.TEXT)
+    inset.set_xlabel("커버리지 %", fontsize=6.5, color=_C.TEXT_LIGHT, labelpad=1)
+    inset.tick_params(axis="x", labelsize=6.5, colors=_C.TEXT_LIGHT)
+    inset.tick_params(axis="y", labelsize=6.5, colors=_C.TEXT)
+    inset.grid(True, axis="x", linestyle=":", alpha=0.25, color=_C.GRID)
+    inset.set_facecolor("white")
+    inset.set_title(title, fontsize=7.5, color=_C.TEXT, pad=2, fontweight="bold")
+    for spine in inset.spines.values():
+        spine.set_color(_C.GRID)
+        spine.set_linewidth(0.7)
+
+    max_value = max(values) if values else 0.0
+    inset.set_xlim(0, max(max_value * 1.18, 1.0))
+    for idx, value in enumerate(values):
+        inset.text(value + max(max_value * 0.02, 0.1), idx, f"{value:.1f}%",
+                   va="center", fontsize=6.2, color=_C.TEXT)
+
+
+def _build_compare_contributor_rows(
+    summary_a: Optional[dict],
+    summary_b: Optional[dict],
+    *,
+    limit: int = 4,
+) -> List[Tuple[str, float, float]]:
+    """Collect a side-by-side contributor coverage table for compare views."""
+    contributors_a = (summary_a or {}).get("contributors", [])
+    contributors_b = (summary_b or {}).get("contributors", [])
+    if not contributors_a and not contributors_b:
+        return []
+
+    ordered_names: List[str] = []
+    coverage_a = {}
+    coverage_b = {}
+
+    for item in contributors_a:
+        name = str(item.get("station_name", "")).strip()
+        if not name:
+            continue
+        coverage_a[name] = float(item.get("coverage_pct", 0.0))
+        if name not in ordered_names:
+            ordered_names.append(name)
+
+    for item in contributors_b:
+        name = str(item.get("station_name", "")).strip()
+        if not name:
+            continue
+        coverage_b[name] = float(item.get("coverage_pct", 0.0))
+        if name not in ordered_names:
+            ordered_names.append(name)
+
+    rows = [
+        (name, coverage_a.get(name, 0.0), coverage_b.get(name, 0.0))
+        for name in ordered_names
+    ]
+    rows.sort(key=lambda item: max(item[1], item[2]), reverse=True)
+    return rows[:limit]
+
+
+def _add_compare_contributor_inset(
+    ax,
+    summary_a: Optional[dict],
+    summary_b: Optional[dict],
+    *,
+    loc: str = "lower right",
+    title: str = "기준항 커버리지",
+) -> None:
+    """Add a compact side-by-side contributor comparison chart."""
+    rows = _build_compare_contributor_rows(summary_a, summary_b, limit=4)
+    if not rows:
+        return
+
+    bounds = [0.62, 0.08, 0.35, 0.28] if "right" in loc else [0.03, 0.08, 0.35, 0.28]
+    inset = ax.inset_axes(bounds)
+
+    labels = [row[0] for row in rows][::-1]
+    values_a = [row[1] for row in rows][::-1]
+    values_b = [row[2] for row in rows][::-1]
+    positions = np.arange(len(rows))
+    height = 0.34
+
+    inset.barh(positions + height / 2, values_a, height=height,
+               color=_C.BLUE, alpha=0.82, label="A안")
+    inset.barh(positions - height / 2, values_b, height=height,
+               color=_C.RED, alpha=0.72, label="B안")
+    inset.set_yticks(positions)
+    inset.set_yticklabels(labels, fontsize=6.3, color=_C.TEXT)
+    inset.tick_params(axis="x", labelsize=6.3, colors=_C.TEXT_LIGHT)
+    inset.tick_params(axis="y", labelsize=6.3, colors=_C.TEXT)
+    inset.set_xlabel("커버리지 %", fontsize=6.2, color=_C.TEXT_LIGHT, labelpad=1)
+    inset.set_title(title, fontsize=7.4, color=_C.TEXT, pad=2, fontweight="bold")
+    inset.grid(True, axis="x", linestyle=":", alpha=0.22, color=_C.GRID)
+    inset.set_facecolor("white")
+    inset.legend(loc="lower right", fontsize=6.2, frameon=False, ncol=2)
+    for spine in inset.spines.values():
+        spine.set_color(_C.GRID)
+        spine.set_linewidth(0.7)
+
+    max_value = max(values_a + values_b) if (values_a or values_b) else 0.0
+    inset.set_xlim(0, max(max_value * 1.2, 1.0))
+
+
+def _add_top_mismatch_inset(
+    ax,
+    matched_t: List[datetime],
+    residuals_cm: List[float],
+    *,
+    title: str = "주요 차이 시점",
+    limit: int = 5,
+) -> None:
+    """Add a compact ranking of the largest absolute residual timestamps."""
+    if not matched_t or not residuals_cm:
+        return
+
+    pairs = sorted(
+        zip(matched_t, residuals_cm),
+        key=lambda item: abs(item[1]),
+        reverse=True,
+    )[:limit]
+    if not pairs:
+        return
+
+    labels = [t.strftime("%m/%d %H:%M") for t, _ in pairs][::-1]
+    values = [float(v) for _, v in pairs][::-1]
+    colors = [_C.RED if value >= 0 else _C.BLUE for value in values]
+
+    inset = ax.inset_axes([0.03, 0.54, 0.34, 0.38])
+    inset.barh(range(len(values)), values, color=colors, alpha=0.85)
+    inset.axvline(0, color=_C.GRAY, linewidth=0.8, alpha=0.6)
+    inset.set_yticks(range(len(values)))
+    inset.set_yticklabels(labels, fontsize=6.5, color=_C.TEXT)
+    inset.tick_params(axis="x", labelsize=6.5, colors=_C.TEXT_LIGHT)
+    inset.tick_params(axis="y", labelsize=6.5, colors=_C.TEXT)
+    inset.set_xlabel("Residual (cm)", fontsize=6.5, color=_C.TEXT_LIGHT, labelpad=1)
+    inset.set_title(title, fontsize=7.5, color=_C.TEXT, pad=2, fontweight="bold")
+    inset.grid(True, axis="x", linestyle=":", alpha=0.25, color=_C.GRID)
+    inset.set_facecolor("white")
+    for spine in inset.spines.values():
+        spine.set_color(_C.GRID)
+        spine.set_linewidth(0.7)
+
+    max_abs = max(abs(value) for value in values) if values else 0.0
+    inset.set_xlim(-max(max_abs * 1.15, 1.0), max(max_abs * 1.15, 1.0))
+    for idx, value in enumerate(values):
+        x = value + (0.04 * max_abs if value >= 0 else -0.04 * max_abs)
+        ha = "left" if value >= 0 else "right"
+        inset.text(x, idx, f"{value:+.2f}", va="center", ha=ha,
+                   fontsize=6.2, color=_C.TEXT)
+
+
 def _auto_xfmt(ax, hours):
     """시간 범위에 따른 X축 포맷 자동 설정"""
     if hours <= 24:
@@ -173,6 +515,7 @@ def generate_tide_graph(tid_path: str, output_image: str = None,
     _init_fonts()
 
     times, values = parse_tid_for_graph(tid_path)
+    summary = _load_run_summary(tid_path)
     if not times:
         logger.error(f"그래프 데이터가 없습니다: {tid_path}")
         return None
@@ -193,6 +536,7 @@ def generate_tide_graph(tid_path: str, output_image: str = None,
     if has_ref:
         return _generate_comparison_layout(
             times, values, ref_times, ref_values,
+            tid_path, reference_path,
             basename, output_image, title, dpi, tolerance_cm)
 
     # ── 단독 결과 그래프 (참조 없음) ──
@@ -211,8 +555,11 @@ def generate_tide_graph(tid_path: str, output_image: str = None,
     hours = (times[-1] - times[0]).total_seconds() / 3600
     _auto_xfmt(ax, hours)
 
-    # 통계 박스
     mean_v = sum(values) / len(values)
+    ax.axhline(y=mean_v, color=_C.ORANGE, linewidth=0.9,
+               linestyle='--', alpha=0.7, zorder=1)
+
+    # 통계 박스
     stats = (f'데이터: {len(values):,}개\n'
              f'평균: {mean_v:.3f}m\n'
              f'범위: {min(values):.3f} ~ {max(values):.3f}m')
@@ -220,7 +567,10 @@ def generate_tide_graph(tid_path: str, output_image: str = None,
             va='top', ha='left',
             bbox=dict(boxstyle='round,pad=0.5', fc='white',
                       ec=_C.GRID, alpha=0.92))
-    ax.legend(loc='upper right', fontsize=9, framealpha=0.9,
+    _annotate_extrema(ax, times, values)
+    _add_brief_box(ax, _build_brief_lines(summary), loc='upper right')
+    _add_contributor_inset(ax, summary, loc='lower left')
+    ax.legend(loc='lower right', fontsize=9, framealpha=0.9,
               edgecolor=_C.GRID)
     ax.axhline(y=0, color=_C.GRAY, linewidth=0.5, alpha=0.4)
 
@@ -240,6 +590,7 @@ def generate_tide_graph(tid_path: str, output_image: str = None,
 # ══════════════════════════════════════════════════════════════
 def _generate_comparison_layout(
         times1, values1, times2, values2,
+        tid_path, reference_path,
         basename, output_image, title, dpi, tolerance_cm=1.0):
     """
     3패널 비교 그래프:
@@ -251,6 +602,8 @@ def _generate_comparison_layout(
         tolerance_cm: 허용 편차 범위 (cm). 기본값 1.0cm.
     """
     tol = tolerance_cm
+    summary_a = _load_run_summary(tid_path)
+    summary_b = _load_run_summary(reference_path)
     # 시간 매칭
     ref_dict = {t: v for t, v in zip(times2, values2)}
     matched_t, matched_v1, matched_v2, residuals = [], [], [], []
@@ -290,6 +643,13 @@ def _generate_comparison_layout(
                      color=_C.TITLE, pad=14)
     ax_top.legend(loc='upper right', fontsize=9, framealpha=0.95,
                   edgecolor=_C.GRID, ncol=2)
+    _annotate_extrema(ax_top, times1, values1)
+    _add_brief_box(
+        ax_top,
+        _build_compare_driver_lines(summary_a, summary_b, tol),
+        loc='upper left',
+    )
+    _add_compare_contributor_inset(ax_top, summary_a, summary_b, loc='lower right')
 
     # 데이터 통계
     mean_v = sum(values1) / len(values1)
@@ -332,6 +692,28 @@ def _generate_comparison_layout(
         # y축 대칭
         max_abs = max(abs(residuals_np.min()), abs(residuals_np.max()), tol * 1.5)
         ax_mid.set_ylim(-max_abs * 1.3, max_abs * 1.3)
+        peak_idx = int(np.argmax(np.abs(residuals_np)))
+        peak_time = matched_t[peak_idx]
+        peak_value = residuals[peak_idx]
+        peak_offset = 12 if peak_value >= 0 else -18
+        peak_va = 'bottom' if peak_value >= 0 else 'top'
+        ax_mid.scatter([peak_time], [peak_value], color=_C.ORANGE, s=32,
+                       zorder=5, edgecolors='white', linewidths=0.8)
+        ax_mid.annotate(
+            f'최대 차이 {peak_value:+.3f}cm',
+            xy=(peak_time, peak_value),
+            xytext=(10, peak_offset),
+            textcoords='offset points',
+            fontsize=7.5,
+            color=_C.ORANGE,
+            fontweight='bold',
+            va=peak_va,
+            bbox=dict(boxstyle='round,pad=0.25', fc='white',
+                      ec=_C.ORANGE, alpha=0.9),
+            arrowprops=dict(arrowstyle='->', color=_C.ORANGE,
+                            lw=0.8, alpha=0.7),
+            zorder=6,
+        )
 
     _style_ax(ax_mid, ylabel='잔차 (cm)')
     ax_mid.set_title('잔차 분포 (결과 − 참조)', fontsize=10,
@@ -397,8 +779,11 @@ def _generate_comparison_layout(
     ax_bot.set_title('잔차 히스토그램', fontsize=10,
                      fontweight='bold', color=_C.TEXT, pad=6, loc='left')
     ax_bot.yaxis.set_major_locator(MaxNLocator(integer=True))
+    _add_top_mismatch_inset(ax_bot, matched_t, residuals)
 
     # 워터마크
+    _add_top_mismatch_inset(ax_hist, matched_t, residuals)
+
     fig.text(0.995, 0.003, 'TideBedPy  |  by Junhyub',
              fontsize=7, color='#bbb', ha='right', va='bottom',
              style='italic')
@@ -433,6 +818,8 @@ def generate_comparison_graph(tid_path: str, reference_path: str,
 
     times1, values1 = parse_tid_for_graph(tid_path)
     times2, values2 = parse_tid_for_graph(reference_path)
+    summary_a = _load_run_summary(tid_path)
+    summary_b = _load_run_summary(reference_path)
 
     if not times1 or not times2:
         return None
@@ -476,9 +863,16 @@ def generate_comparison_graph(tid_path: str, reference_path: str,
     ax_main.fill_between(times1, values1, alpha=0.08, color=_C.BLUE, zorder=2)
 
     _style_ax(ax_main, ylabel='Tc (m)')
-    ax_main.set_title(f'조석보정 비교 검증 — {basename}',
+    ax_main.set_title(f'조석보정 비교 검증 - {basename}',
                       fontsize=13, fontweight='bold', color=_C.TITLE, pad=10)
     ax_main.legend(loc='upper right', fontsize=9, framealpha=0.9)
+    _annotate_extrema(ax_main, times1, values1)
+    _add_brief_box(
+        ax_main,
+        _build_compare_driver_lines(summary_a, summary_b, tol),
+        loc='upper left',
+    )
+    _add_compare_contributor_inset(ax_main, summary_a, summary_b, loc='lower right')
     _auto_xfmt(ax_main, hours)
 
     # 최대 편차 구간 표시 (확대 영역)
@@ -521,6 +915,14 @@ def generate_comparison_graph(tid_path: str, reference_path: str,
                     xytext=(10, 15), textcoords='offset points',
                     fontsize=8, color=_C.RED, fontweight='bold',
                     arrowprops=dict(arrowstyle='->', color=_C.RED, lw=1.2))
+            _add_brief_box(
+                ax_zoom,
+                [
+                    f"최대 residual: {residuals[max_idx]:+.3f} cm",
+                    f"확대 구간: {zoom_start:%m/%d %H:%M} - {zoom_end:%m/%d %H:%M}",
+                ],
+                loc='lower left',
+            )
 
         _style_ax(ax_zoom, ylabel='Tc (m)')
         ax_zoom.set_title('최대편차 구간 확대', fontsize=10,
@@ -553,6 +955,28 @@ def generate_comparison_graph(tid_path: str, reference_path: str,
 
         max_abs = max(abs(residuals_np.min()), abs(residuals_np.max()), tol * 1.5)
         ax_res.set_ylim(-max_abs * 1.3, max_abs * 1.3)
+        peak_idx = int(np.argmax(np.abs(residuals_np)))
+        peak_time = matched_t[peak_idx]
+        peak_value = residuals[peak_idx]
+        peak_offset = 12 if peak_value >= 0 else -18
+        peak_va = 'bottom' if peak_value >= 0 else 'top'
+        ax_res.scatter([peak_time], [peak_value], color=_C.ORANGE, s=32,
+                       zorder=5, edgecolors='white', linewidths=0.8)
+        ax_res.annotate(
+            f'최대 차이 {peak_value:+.3f}cm',
+            xy=(peak_time, peak_value),
+            xytext=(10, peak_offset),
+            textcoords='offset points',
+            fontsize=7.5,
+            color=_C.ORANGE,
+            fontweight='bold',
+            va=peak_va,
+            bbox=dict(boxstyle='round,pad=0.25', fc='white',
+                      ec=_C.ORANGE, alpha=0.9),
+            arrowprops=dict(arrowstyle='->', color=_C.ORANGE,
+                            lw=0.8, alpha=0.7),
+            zorder=6,
+        )
 
     _style_ax(ax_res, ylabel='잔차 (cm)', xlabel='시간')
     ax_res.set_title('잔차 (결과 − 참조)', fontsize=10,

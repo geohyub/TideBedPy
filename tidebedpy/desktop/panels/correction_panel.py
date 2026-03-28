@@ -1,5 +1,6 @@
 """CorrectionPanel — Main tidal correction workflow panel."""
 
+import html
 import json
 import os
 import sys
@@ -192,6 +193,10 @@ class CorrectionPanel(QWidget):
         self._worker = None
         self._thread = None
         self._is_running = False
+        self._active_preset_name = ""
+        self._active_preset_summary = ""
+        self._last_result_summary = None
+        self._last_viz_data = None
 
         self._history_entries = []
         self._build_ui()
@@ -199,6 +204,8 @@ class CorrectionPanel(QWidget):
         self._load_saved_api_key()
         self._load_recent_paths()
         self._load_history()
+        self._update_drop_zone_status()
+        self._update_preset_banner()
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -235,6 +242,9 @@ class CorrectionPanel(QWidget):
         self._build_control_section()
         self._build_log_card()
         self._build_result_preview()
+        self._refresh_drop_zone_prompt()
+        self._update_drop_zone_status()
+        self._update_preset_banner()
 
         self._content_layout.addStretch()
 
@@ -322,34 +332,110 @@ class CorrectionPanel(QWidget):
         if os.path.isdir(path):
             event.acceptProposedAction()
             if self._batch_mode.isChecked():
-                # In batch mode, add to batch list
-                self._batch_list.addItem(path)
+                self._add_batch_folder(path)
             else:
                 self._nav_row.set_text(path)
                 self._on_nav_changed(path)
             self._update_drop_zone_status()
         else:
             self._drop_zone.setStyleSheet(self._drop_zone_default_ss)
+            self._controller.toast_requested.emit("폴더만 드래그해서 넣을 수 있습니다.", "warning")
 
     def _update_drop_zone_status(self):
         """Check if all required fields are filled and show ready status."""
-        has_nav = bool(self._nav_row.text() and os.path.isdir(self._nav_row.text()))
-        if self._batch_mode.isChecked():
-            has_nav = self._batch_list.count() > 0
-        has_tide = self._api_check.isChecked() or bool(
-            self._tide_row.text() and os.path.isdir(self._tide_row.text())
-        )
-        has_db = bool(self._db_row.text())
-        has_station = bool(self._station_row.text())
-        has_output = bool(self._output_row.text())
+        if not hasattr(self, "_drop_status"):
+            return
 
-        if has_nav and has_tide and has_db and has_station and has_output:
+        missing = []
+        is_batch = hasattr(self, "_batch_mode") and self._batch_mode.isChecked()
+        is_global_model = hasattr(self, "_tide_model_combo") and self._tide_model_combo.currentIndex() > 0
+        use_api = hasattr(self, "_api_check") and self._api_check.isChecked()
+
+        has_nav = bool(self._nav_row.text() and os.path.isdir(self._nav_row.text()))
+        if is_batch:
+            has_nav = self._batch_list.count() > 0
+        if not has_nav:
+            missing.append("Nav 목록" if is_batch else "Nav 폴더")
+
+        if is_global_model:
+            has_model_dir = bool(self._model_dir_row.text() and os.path.isdir(self._model_dir_row.text()))
+            if not has_model_dir:
+                missing.append("모델 폴더")
+        else:
+            if use_api:
+                if not self._api_key_edit.text().strip():
+                    missing.append("API 키")
+            else:
+                has_tide = bool(self._tide_row.text() and os.path.isdir(self._tide_row.text()))
+                if not has_tide:
+                    missing.append("조위 폴더")
+
+            has_db = bool(self._db_row.text() and os.path.isdir(self._db_row.text()))
+            if not has_db:
+                missing.append("개정수 DB")
+
+            has_station = bool(self._station_row.text() and os.path.isfile(self._station_row.text()))
+            if not has_station:
+                missing.append("기준항 정보")
+
+        has_output = bool(self._output_row.text())
+        if not has_output:
+            missing.append("출력 경로")
+
+        if hasattr(self, "_validate_check") and self._validate_check.isChecked():
+            has_validate = bool(self._validate_edit.text() and os.path.isfile(self._validate_edit.text()))
+            if not has_validate:
+                missing.append("참조 TID")
+
+        if not missing:
             self._drop_zone.setStyleSheet(self._drop_zone_ready_ss)
-            self._drop_status.setText("-- 바로 실행 가능 --")
-            self._drop_status.setVisible(True)
+            self._set_drop_status(
+                "준비 완료 · 바로 보정을 실행할 수 있습니다",
+                Dark.GREEN,
+            )
         else:
             self._drop_zone.setStyleSheet(self._drop_zone_default_ss)
-            self._drop_status.setVisible(False)
+            self._set_drop_status(
+                "다음 입력 필요: " + ", ".join(missing[:5]),
+                Dark.WARNING,
+            )
+
+    def _set_drop_status(self, message: str, color: str) -> None:
+        """Update the quick-start status message on the drop zone."""
+        self._drop_status.setText(message)
+        self._drop_status.setVisible(bool(message))
+        self._drop_status.setStyleSheet(f"""
+            color: {color};
+            font-size: {Font.XS}px;
+            font-weight: {Font.MEDIUM};
+            background: transparent;
+            border: none;
+        """)
+
+    def _refresh_drop_zone_prompt(self) -> None:
+        """Adjust the quick-start prompt based on current mode."""
+        if not hasattr(self, "_drop_label"):
+            return
+        if hasattr(self, "_batch_mode") and self._batch_mode.isChecked():
+            self._drop_label.setText("Nav 폴더들을 여기에 드래그해 배치 목록에 추가하세요")
+        else:
+            self._drop_label.setText("Nav 폴더를 여기에 드래그하세요")
+
+    def _add_batch_folder(self, folder: str) -> bool:
+        """Add a batch folder once and avoid duplicate entries."""
+        if not folder or not os.path.isdir(folder):
+            return False
+
+        normalized = os.path.normcase(os.path.normpath(folder))
+        for i in range(self._batch_list.count()):
+            existing = self._batch_list.item(i).text()
+            if os.path.normcase(os.path.normpath(existing)) == normalized:
+                self._controller.toast_requested.emit("이미 배치 목록에 있는 Nav 폴더입니다.", "info")
+                return False
+
+        self._batch_list.addItem(folder)
+        self._update_drop_zone_status()
+        return True
 
     # ────────────────────────────────────────────
     #  Input Card
@@ -360,7 +446,7 @@ class CorrectionPanel(QWidget):
         # Batch mode toggle (A2)
         batch_row = QHBoxLayout()
         batch_row.setContentsMargins(0, 0, 0, 0)
-        self._batch_mode = QCheckBox("Batch 모드 (다중 폴더 처리)")
+        self._batch_mode = QCheckBox("배치 모드 (다중 폴더 처리)")
         self._batch_mode.setStyleSheet(f"""
             QCheckBox {{
                 color: {Dark.MUTED};
@@ -387,6 +473,7 @@ class CorrectionPanel(QWidget):
         # Single nav row (default)
         self._nav_row = PathRow("항적 폴더", "Nav 데이터 폴더 (Before/After 모두 지원)", mode="folder")
         self._nav_row.path_changed.connect(self._on_nav_changed)
+        self._nav_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         layout.addWidget(self._nav_row)
 
         # Batch list widget (hidden by default)
@@ -471,6 +558,7 @@ class CorrectionPanel(QWidget):
 
         self._tide_row = PathRow("조위 폴더", "실측/예측 조위 파일 폴더 (TOPS/CSV 등)", mode="folder")
         self._tide_row.path_changed.connect(self._on_tide_changed)
+        self._tide_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         layout.addWidget(self._tide_row)
 
         # API checkbox
@@ -518,6 +606,7 @@ class CorrectionPanel(QWidget):
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._api_key_edit.setPlaceholderText("공공데이터포털 서비스키")
+        self._api_key_edit.textChanged.connect(lambda _text: self._update_drop_zone_status())
         self._api_key_edit.setStyleSheet(f"""
             QLineEdit {{
                 background: {Dark.BG_ALT};
@@ -539,6 +628,7 @@ class CorrectionPanel(QWidget):
             "출력 TID", "조석보정 결과 (.tid) 저장 경로",
             mode="save", file_filter="TID (*.tid);;All (*.*)",
         )
+        self._output_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         layout.addWidget(self._output_row)
 
         self._content_layout.addWidget(card)
@@ -563,6 +653,7 @@ class CorrectionPanel(QWidget):
         self._db_section = CollapsibleSection("개정수 DB 설정")
 
         self._db_row = PathRow("개정수 DB", "File_Catalog.txt + CT/ 폴더가 있는 디렉토리", mode="folder")
+        self._db_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         self._db_section.content_layout.addWidget(self._db_row)
 
         self._station_row = PathRow(
@@ -570,6 +661,7 @@ class CorrectionPanel(QWidget):
             mode="file", file_filter="텍스트 (*.txt);;All (*.*)",
         )
         self._station_row.path_changed.connect(self._on_station_changed)
+        self._station_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         self._db_section.content_layout.addWidget(self._station_row)
 
         card_layout.addWidget(self._db_section)
@@ -596,6 +688,7 @@ class CorrectionPanel(QWidget):
             "모델 경로", "pyTMD 모델 데이터 디렉토리 (FES2014/TPXO9)",
             mode="folder",
         )
+        self._model_dir_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         self._model_dir_row.setVisible(False)
         layout.addWidget(self._model_dir_row)
 
@@ -638,6 +731,7 @@ class CorrectionPanel(QWidget):
         self._validate_edit = QLineEdit()
         self._validate_edit.setEnabled(False)
         self._validate_edit.setPlaceholderText("참조 TID 파일 경로")
+        self._validate_edit.textChanged.connect(lambda _text: self._update_drop_zone_status())
         self._validate_edit.setStyleSheet(f"""
             QLineEdit {{
                 background: {Dark.BG_ALT};
@@ -794,6 +888,21 @@ class CorrectionPanel(QWidget):
 
         layout.addLayout(btn_row)
 
+        self._preset_hint = QLabel()
+        self._preset_hint.setWordWrap(True)
+        self._preset_hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._preset_hint.setStyleSheet(f"""
+            QLabel {{
+                background: {Dark.BG_ALT};
+                color: {Dark.TEXT};
+                font-size: {Font.XS}px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: {Radius.SM}px;
+                padding: 8px 10px;
+            }}
+        """)
+        layout.addWidget(self._preset_hint)
+
         self._content_layout.addWidget(frame)
 
     # ────────────────────────────────────────────
@@ -843,6 +952,22 @@ class CorrectionPanel(QWidget):
         hdr.addWidget(lbl)
         hdr.addStretch()
         layout.addLayout(hdr)
+
+        self._preview_summary = QLabel()
+        self._preview_summary.setWordWrap(True)
+        self._preview_summary.setVisible(False)
+        self._preview_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._preview_summary.setStyleSheet(f"""
+            QLabel {{
+                background: {Dark.BG_ALT};
+                color: {Dark.TEXT};
+                font-size: {Font.SM}px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: {Radius.SM}px;
+                padding: 10px 12px;
+            }}
+        """)
+        layout.addWidget(self._preview_summary)
 
         # Interactive tide chart (PyQtGraph)
         self._tide_chart = None
@@ -968,6 +1093,7 @@ class CorrectionPanel(QWidget):
             self._api_widget.setVisible(False)
         else:
             self._api_widget.setVisible(self._api_check.isChecked())
+        self._update_drop_zone_status()
 
     def _styled_check(self, text: str, checked: bool) -> QCheckBox:
         cb = QCheckBox(text)
@@ -1063,6 +1189,7 @@ class CorrectionPanel(QWidget):
     def _on_nav_changed(self, nav_path: str):
         """When Nav path changes, try to re-discover DB/station and suggest output."""
         if not nav_path or not os.path.isdir(nav_path):
+            self._update_drop_zone_status()
             return
 
         # Suggest output path
@@ -1091,14 +1218,17 @@ class CorrectionPanel(QWidget):
 
         # Auto-detect rank limit
         self._auto_detect_rank_limit()
+        self._update_drop_zone_status()
 
     def _on_tide_changed(self, tide_path: str):
         """When tide path changes, auto-detect matching stations and update rank."""
         self._auto_detect_rank_limit()
+        self._update_drop_zone_status()
 
     def _on_station_changed(self, station_path: str):
         """When station info path changes, re-detect rank limit."""
         self._auto_detect_rank_limit()
+        self._update_drop_zone_status()
 
     def _auto_detect_rank_limit(self):
         """Detect matching station count and update rank spin."""
@@ -1153,13 +1283,13 @@ class CorrectionPanel(QWidget):
         """Toggle between single nav row and batch list."""
         self._nav_row.setVisible(not checked)
         self._batch_widget.setVisible(checked)
+        self._refresh_drop_zone_prompt()
         self._update_drop_zone_status()
 
     def _batch_add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Nav 폴더 선택")
         if folder:
-            self._batch_list.addItem(folder)
-            self._update_drop_zone_status()
+            self._add_batch_folder(folder)
 
     def _batch_remove_selected(self):
         for item in self._batch_list.selectedItems():
@@ -1172,10 +1302,12 @@ class CorrectionPanel(QWidget):
         # API mode disables manual rank limit (auto-determined by API)
         self._rank_spin.setEnabled(not checked)
         self._save_api_key()
+        self._update_drop_zone_status()
 
     def _toggle_validate(self, checked: bool):
         self._validate_edit.setEnabled(checked)
         self._validate_btn.setEnabled(checked)
+        self._update_drop_zone_status()
 
     def _browse_validate(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1184,6 +1316,7 @@ class CorrectionPanel(QWidget):
         )
         if path:
             self._validate_edit.setText(path)
+            self._update_drop_zone_status()
 
     # ════════════════════════════════════════════
     #  API Key persistence
@@ -1253,6 +1386,8 @@ class CorrectionPanel(QWidget):
             "tide_model": tide_model,
             "model_dir": self._model_dir_row.text(),
             "output_format": output_format,
+            "preset_name": self._active_preset_name,
+            "preset_summary": self._active_preset_summary,
         }
 
     def _apply_settings(self, settings: dict):
@@ -1286,11 +1421,11 @@ class CorrectionPanel(QWidget):
             self._tolerance_spin.setValue(settings["tolerance_cm"])
         if "use_api" in settings:
             self._api_check.setChecked(settings["use_api"])
-        if "api_key" in settings:
-            self._api_key_edit.setText(settings["api_key"])
+        self._update_drop_zone_status()
+        self._update_preset_banner()
 
     def _save_preset(self):
-        from tidebedpy.settings_manager import save_preset
+        from tidebedpy.settings_manager import save_preset, _build_preset_summary
         from PySide6.QtWidgets import QInputDialog
         from datetime import datetime
 
@@ -1300,7 +1435,11 @@ class CorrectionPanel(QWidget):
             text=f"세팅_{datetime.now().strftime('%Y%m%d')}",
         )
         if ok and name.strip():
-            filepath = save_preset(name.strip(), self._get_current_settings())
+            current_settings = self._get_current_settings()
+            filepath = save_preset(name.strip(), current_settings)
+            self._active_preset_name = name.strip()
+            self._active_preset_summary = _build_preset_summary(current_settings)
+            self._update_preset_banner()
             self._controller.toast_requested.emit(
                 f"세팅 저장: {os.path.basename(filepath)}", "success"
             )
@@ -1313,7 +1452,14 @@ class CorrectionPanel(QWidget):
             QMessageBox.information(self, "알림", "저장된 프리셋이 없습니다.")
             return
 
-        names = [f"{p['name']}  ({p['created']})" for p in presets]
+        names = []
+        for preset in presets:
+            line = preset["name"]
+            if preset.get("summary"):
+                line += f" | {preset['summary']}"
+            if preset.get("created"):
+                line += f" | {preset['created']}"
+            names.append(line)
         from PySide6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getItem(
             self, "세팅 불러오기", "프리셋 선택:", names, 0, False,
@@ -1323,6 +1469,9 @@ class CorrectionPanel(QWidget):
             settings = load_preset(presets[idx]["path"])
             if settings:
                 self._apply_settings(settings)
+                self._active_preset_name = presets[idx].get("name", "")
+                self._active_preset_summary = presets[idx].get("summary", "")
+                self._update_preset_banner()
                 self._controller.toast_requested.emit(
                     f"세팅 불러오기: {presets[idx]['name']}", "info"
                 )
@@ -1361,6 +1510,7 @@ class CorrectionPanel(QWidget):
                 self._station_row.set_text(config.ref_st_info_path)
 
             self._auto_detect_rank_limit()
+            self._update_drop_zone_status()
             self._controller.toast_requested.emit("INI 설정 불러오기 완료", "info")
         except Exception as e:
             self._controller.toast_requested.emit(f"INI 오류: {e}", "error")
@@ -1382,12 +1532,17 @@ class CorrectionPanel(QWidget):
         self._tide_model_combo.setCurrentIndex(0)
         self._output_format_combo.setCurrentIndex(0)
         self._model_dir_row.set_text("")
+        self._active_preset_name = ""
+        self._active_preset_summary = ""
+        self._clear_preview()
         self._progress.reset()
         self._open_folder_btn.setVisible(False)
         self._toggle_validate(False)
         self._toggle_api(False)
         self._on_tide_model_changed(0)
         self._auto_discover_paths()
+        self._update_drop_zone_status()
+        self._update_preset_banner()
         self._controller.toast_requested.emit("설정이 초기화되었습니다", "info")
 
     # ════════════════════════════════════════════
@@ -1399,12 +1554,12 @@ class CorrectionPanel(QWidget):
 
         if self._batch_mode.isChecked():
             if self._batch_list.count() == 0:
-                errors.append("Batch 모드: 처리할 Nav 폴더가 없습니다.")
+                errors.append("배치 모드: 처리할 Nav 폴더가 없습니다.")
             else:
                 for i in range(self._batch_list.count()):
                     p = self._batch_list.item(i).text()
                     if not os.path.isdir(p):
-                        errors.append(f"Batch 폴더를 찾을 수 없습니다: {p}")
+                        errors.append(f"배치 폴더를 찾을 수 없습니다: {p}")
         else:
             nav = self._nav_row.text()
             if not nav:
@@ -1471,6 +1626,7 @@ class CorrectionPanel(QWidget):
         self._stop_btn.setEnabled(True)
         self._open_folder_btn.setVisible(False)
         self._log_viewer.clear_log()
+        self._clear_preview(hide_card=True)
         self._progress.start()
         self._set_inputs_locked(True)
 
@@ -1506,6 +1662,7 @@ class CorrectionPanel(QWidget):
         self._stop_btn.setEnabled(True)
         self._open_folder_btn.setVisible(False)
         self._log_viewer.clear_log()
+        self._clear_preview(hide_card=True)
         self._progress.start()
         self._set_inputs_locked(True)
         self._save_api_key()
@@ -1532,7 +1689,7 @@ class CorrectionPanel(QWidget):
             self._stop_btn.setEnabled(False)
             elapsed = time.time() - self._run_start_time
             success_count = sum(1 for r in self._batch_results if r)
-            msg = f"Batch 완료: {success_count}/{total} 성공 ({elapsed:.1f}초)"
+            msg = f"배치 완료: {success_count}/{total} 성공 ({elapsed:.1f}초)"
             self._progress.set_finished(success_count == total, msg)
             self._controller.toast_requested.emit(msg, "success" if success_count == total else "warning")
             self._open_folder_btn.setVisible(True)
@@ -1545,7 +1702,7 @@ class CorrectionPanel(QWidget):
             f"{'=' * 40}", "info"
         )
         self._log_viewer.append_log(
-            f"[Batch {idx + 1}/{total}] {folder_name}", "info"
+            f"[배치 {idx + 1}/{total}] {folder_name}", "info"
         )
         self._log_viewer.append_log(
             f"{'=' * 40}", "info"
@@ -1566,7 +1723,7 @@ class CorrectionPanel(QWidget):
         self._worker.progress.connect(self._on_progress)
         self._worker.log.connect(self._log_viewer.append_log)
         self._worker.status.connect(lambda s: self._progress.set_status(
-            f"[Batch {idx + 1}/{total}] {s}"
+            f"[배치 {idx + 1}/{total}] {s}"
         ))
         self._worker.finished.connect(self._on_batch_item_finished)
 
@@ -1578,9 +1735,9 @@ class CorrectionPanel(QWidget):
         self._batch_results.append(success)
         idx = self._batch_index
         folder_name = os.path.basename(self._batch_folders[idx].rstrip("/\\"))
-        status = "OK" if success else "FAIL"
+        status = "완료" if success else "실패"
         self._log_viewer.append_log(
-            f"[Batch {idx + 1}/{self._batch_total}] {folder_name}: {status} - {msg}",
+            f"[배치 {idx + 1}/{self._batch_total}] {folder_name}: {status} - {msg}",
             "info" if success else "error"
         )
 
@@ -1665,6 +1822,9 @@ class CorrectionPanel(QWidget):
     def _on_result_data(self, viz_data: dict):
         """Forward result data to viewer panel and switch to it."""
         try:
+            self._last_viz_data = viz_data
+            self._last_result_summary = viz_data.get("summary")
+            self._set_preview_summary()
             app = self.window()
             viewer = app._panels.get("viewer")
             if viewer and hasattr(viewer, "load_result_data"):
@@ -1716,23 +1876,66 @@ class CorrectionPanel(QWidget):
             return
 
         chart_loaded = False
+        weight_loaded = False
 
-        # Load TID result into interactive charts
-        if HAS_CHARTS and self._tide_chart and os.path.isfile(output):
+        # Prefer the live worker payload so preview stays consistent with the viewer.
+        if HAS_CHARTS and self._tide_chart and self._last_viz_data:
             try:
-                from tidebedpy.output.report import parse_tid_data
                 from datetime import datetime
-                tid_data = parse_tid_data(output)
-                if tid_data and len(tid_data) > 0:
+                processed = self._last_viz_data.get("processed", [])
+                times = []
+                values = []
+                for _x, _y, ts, tc_cm in processed:
+                    try:
+                        times.append(datetime.fromisoformat(ts))
+                        values.append(float(tc_cm))
+                    except (ValueError, TypeError):
+                        continue
+                if times:
+                    self._tide_chart.set_data(times, values)
+                    chart_loaded = True
+
+                if self._weight_chart:
+                    weight_times_raw = self._last_viz_data.get("weight_times", [])
+                    station_weights = self._last_viz_data.get("station_weights", {})
+                    if weight_times_raw and station_weights:
+                        weight_times = []
+                        for ts in weight_times_raw:
+                            try:
+                                weight_times.append(datetime.fromisoformat(ts))
+                            except (ValueError, TypeError):
+                                continue
+
+                        if weight_times:
+                            n = len(weight_times)
+                            aligned_weights = {}
+                            for name, wlist in station_weights.items():
+                                if len(wlist) >= n:
+                                    aligned_weights[name] = wlist[:n]
+                                else:
+                                    aligned_weights[name] = list(wlist) + [0.0] * (n - len(wlist))
+
+                            if aligned_weights:
+                                self._weight_chart.set_data(weight_times, aligned_weights)
+                                weight_loaded = True
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+        # Fallback: load the written TID file and convert metres -> cm for desktop charts.
+        if HAS_CHARTS and self._tide_chart and not chart_loaded and os.path.isfile(output):
+            try:
+                from tidebedpy.output.report import parse_tid_data_cm
+                from datetime import datetime
+                tid_data = parse_tid_data_cm(output)
+                if tid_data:
                     times = []
                     values = []
-                    for item in tid_data:
-                        # parse_tid_data returns (time_str, tc_value) tuples
-                        t_str, tc_val = item[0], item[1]
+                    for t_str, tc_cm in tid_data:
                         try:
                             t = datetime.strptime(t_str, "%Y/%m/%d %H:%M:%S")
                             times.append(t)
-                            values.append(float(tc_val))
+                            values.append(float(tc_cm))
                         except (ValueError, TypeError):
                             continue
                     if times:
@@ -1742,11 +1945,16 @@ class CorrectionPanel(QWidget):
                 import traceback
                 traceback.print_exc()
 
+        self._set_preview_summary()
         self._preview_card.setVisible(True)
         if self._tide_chart:
+            if not chart_loaded:
+                self._tide_chart.clear()
             self._tide_chart.setVisible(chart_loaded)
         if self._weight_chart:
-            self._weight_chart.setVisible(False)  # needs station weight data
+            if not weight_loaded:
+                self._weight_chart.clear()
+            self._weight_chart.setVisible(weight_loaded)
 
         # Static image fallback/supplement
         candidates = [
@@ -1761,6 +1969,8 @@ class CorrectionPanel(QWidget):
                 found = path
                 break
 
+        self._preview_label.clear()
+        self._preview_label.setVisible(False)
         if found:
             pixmap = QPixmap(found)
             if not pixmap.isNull():
@@ -1770,8 +1980,106 @@ class CorrectionPanel(QWidget):
                 )
                 self._preview_label.setPixmap(scaled)
                 self._preview_label.setVisible(True)
-        else:
+
+    def _set_preview_summary(self):
+        """Show a short shared run summary above the preview charts."""
+        summary = self._last_result_summary
+        if not summary:
+            self._preview_summary.clear()
+            self._preview_summary.setVisible(False)
+            return
+
+        story = summary.get("story", {})
+        lines = []
+
+        headline = summary.get("headline", "").strip()
+        if headline:
+            lines.append(f"<b>{html.escape(headline)}</b>")
+
+        settings = summary.get("settings", {})
+        preset_name = str(settings.get("preset_name", "")).strip()
+        preset_summary = str(settings.get("preset_summary", "")).strip()
+        if preset_name and preset_summary:
+            lines.append(
+                f"<b>프리셋</b>: {html.escape(preset_name)} - {html.escape(preset_summary)}"
+            )
+        elif preset_name:
+            lines.append(f"<b>프리셋</b>: {html.escape(preset_name)}")
+        elif preset_summary:
+            lines.append(f"<b>프리셋 의미</b>: {html.escape(preset_summary)}")
+
+        for section_name in ("workflow", "rationale", "quality", "stations"):
+            section_lines = story.get(section_name, [])
+            if section_lines:
+                lines.append(html.escape(section_lines[0]))
+
+        contributors = summary.get("contributors", [])[:3]
+        if contributors:
+            contributor_text = ", ".join(
+                f"{item['station_name']} ({item['coverage_pct']:.1f}%, w {item['avg_weight']:.3f})"
+                for item in contributors
+            )
+            lines.append(f"<b>주요 기준항</b>: {html.escape(contributor_text)}")
+
+        self._preview_summary.setText("<br>".join(lines))
+        self._preview_summary.setVisible(bool(lines))
+
+    def _clear_preview(self, hide_card: bool = False) -> None:
+        """Clear preview widgets so stale outputs do not linger across runs."""
+        self._last_result_summary = None
+        self._last_viz_data = None
+        self._preview_summary.clear()
+        self._preview_summary.setVisible(False)
+        self._preview_label.clear()
+        self._preview_label.setVisible(False)
+        if self._tide_chart:
+            self._tide_chart.clear()
+            self._tide_chart.setVisible(False)
+        if self._weight_chart:
+            self._weight_chart.clear()
+            self._weight_chart.setVisible(False)
+        if hide_card:
             self._preview_card.setVisible(False)
+
+    def _update_preset_banner(self) -> None:
+        """Explain the currently active preset near the run controls."""
+        if not hasattr(self, "_preset_hint"):
+            return
+
+        if self._active_preset_name and self._active_preset_summary:
+            text = (
+                f"<b>활성 프리셋</b>: {html.escape(self._active_preset_name)}"
+                f" - {html.escape(self._active_preset_summary)}"
+            )
+        elif self._active_preset_name:
+            text = f"<b>활성 프리셋</b>: {html.escape(self._active_preset_name)}"
+        else:
+            text = (
+                "프리셋 미사용: 현재 화면에서 보이는 옵션이 그대로 보정에 적용됩니다."
+            )
+        self._preset_hint.setText(text)
+
+    def _restore_saved_preview(self, output_path: str) -> None:
+        """Load preview/summary from an existing output when restoring history."""
+        self._clear_preview(hide_card=True)
+        if not output_path or not os.path.isfile(output_path):
+            return
+
+        try:
+            from tidebedpy.output.summary import load_summary_file
+        except ImportError:
+            try:
+                from output.summary import load_summary_file
+            except ImportError:
+                load_summary_file = None
+
+        if load_summary_file:
+            try:
+                self._last_result_summary = load_summary_file(output_path)
+            except Exception:
+                self._last_result_summary = None
+
+        self._show_result_preview()
 
     def _open_output_folder(self):
         output = self._output_row.text()
@@ -1819,6 +2127,7 @@ class CorrectionPanel(QWidget):
                     self._interval_spin.setValue(data["time_interval"])
         except Exception:
             pass
+        self._update_drop_zone_status()
 
     def _save_recent_paths(self):
         """Save current paths to JSON config for next session."""
@@ -1895,6 +2204,7 @@ class CorrectionPanel(QWidget):
     def _refresh_history_combo(self):
         """Update the history combo box items."""
         self._history_combo.clear()
+        self._history_combo.setCurrentIndex(-1)
         try:
             if os.path.isfile(self._CONFIG_FILE):
                 with open(self._CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -1911,7 +2221,7 @@ class CorrectionPanel(QWidget):
             self._history_combo.addItem(f"{date_str}  {nav_name}")
 
     def _on_history_selected(self, index: int):
-        """Restore paths from a history entry and open output location."""
+        """Restore paths from a history entry and refresh preview."""
         if index < 0:
             return
         # Index is reversed (newest first)
@@ -1927,19 +2237,15 @@ class CorrectionPanel(QWidget):
 
         if nav_path:
             self._nav_row.set_text(nav_path)
+            self._on_nav_changed(nav_path)
         if tide_path:
             self._tide_row.set_text(tide_path)
         if output_path:
             self._output_row.set_text(output_path)
+            self._restore_saved_preview(output_path)
 
-        # Open output folder if it exists
-        if output_path:
-            folder = os.path.dirname(output_path)
-            if os.path.isdir(folder):
-                if sys.platform == "win32":
-                    os.startfile(folder)
-                else:
-                    subprocess.Popen(["xdg-open", folder])
+        self._update_drop_zone_status()
+        self._open_folder_btn.setVisible(bool(output_path and os.path.isdir(os.path.dirname(output_path))))
 
         self._controller.toast_requested.emit(
             f"히스토리 복원: {os.path.basename(nav_path)}", "info"
