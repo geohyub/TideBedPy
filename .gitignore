@@ -10,3 +10,5 @@ dist/
 *.dll
 .env
 api_key.txt
+*.zip
+*.exe
