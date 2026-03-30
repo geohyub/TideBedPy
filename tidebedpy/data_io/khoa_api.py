@@ -563,11 +563,16 @@ def auto_fetch_for_nav(
     logger.info(f"선정 관측소 {len(nearby)}개: "
                 + ', '.join(f'{n}({d:.0f}km)' for _, n, d in nearby))
 
-    # 3) 출력 폴더 생성
+    # 3) 출력 폴더 생성 (이전 실행의 잔여 파일 정리)
     obs_dir = os.path.join(output_dir, 'api_실측조위')
     pred_dir = os.path.join(output_dir, 'api_예측조위')
-    os.makedirs(obs_dir, exist_ok=True)
-    os.makedirs(pred_dir, exist_ok=True)
+    for d in (obs_dir, pred_dir):
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                fp = os.path.join(d, f)
+                if os.path.isfile(fp) and f.endswith('.txt'):
+                    os.remove(fp)
+        os.makedirs(d, exist_ok=True)
 
     # 4) 각 관측소 데이터 수집 → TOPS 변환
     results = []

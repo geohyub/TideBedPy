@@ -102,6 +102,7 @@ class CorrectionWorker(QObject):
 
             matched = 0
             validation_result = None
+            chosen = None  # API 선택 관측소 (스코프 공유)
 
             # ── [1/7] Station info ──
             self.status.emit("기준항 정보 로드 중...")
@@ -299,7 +300,32 @@ class CorrectionWorker(QObject):
                     f"UTC{utc_offset:+.0f})",
                     "step",
                 )
-                engine = TideCorrectionEngine(config, stations, cotidal)
+                # API 모드: 사용자가 선택한 관측소만 보정에 사용
+                # 비-API 모드: 조위 폴더에 있는 관측소 전부 사용 (selected_names=None)
+                selected_names = None
+                if use_api and api_key:
+                    chosen_for_engine = chosen
+                    if not chosen_for_engine:
+                        chosen_for_engine = d.get("selected_stations")
+                    if not chosen_for_engine:
+                        chosen_for_engine = getattr(self, '_selected_stations', None)
+                    if chosen_for_engine:
+                        selected_names = []
+                        for s in chosen_for_engine:
+                            if isinstance(s, (tuple, list)) and len(s) >= 2:
+                                selected_names.append(str(s[1]))  # (code, name, dist)
+                            elif isinstance(s, dict):
+                                selected_names.append(str(s.get("name", s.get("station_name", ""))))
+                            else:
+                                selected_names.append(str(s))
+                        self.log.emit(
+                            f"  → 보정 대상 관측소: {', '.join(selected_names)}",
+                            "info",
+                        )
+                engine = TideCorrectionEngine(
+                    config, stations, cotidal,
+                    selected_names=selected_names,
+                )
 
                 def gui_progress(current, total):
                     if self._stop_requested:
@@ -579,13 +605,64 @@ class CorrectionWorker(QObject):
                 used_stations = tide_loaded_stations
                 used_station_names = {n for n, _, _ in used_stations}
 
+                # ── Confidence / uncertainty metrics ──
+                confidence_per_point = []
+                distances_to_nearest = []
+                extrapolation_count = 0
+
+                if all_corrections:
+                    for idx, corr_list in enumerate(all_corrections):
+                        if processed[idx].tc <= -999.0:
+                            confidence_per_point.append(0.0)
+                            distances_to_nearest.append(999.0)
+                            if not corr_list:
+                                extrapolation_count += 1
+                            continue
+                        if corr_list:
+                            min_dist = min(
+                                getattr(c, 'distance_km', 999.0)
+                                for c in corr_list
+                            )
+                            distances_to_nearest.append(min_dist)
+                            conf = 1.0 / (1.0 + min_dist / 50.0)
+                            confidence_per_point.append(round(conf, 4))
+                            if min_dist > 100.0:
+                                extrapolation_count += 1
+                        else:
+                            distances_to_nearest.append(999.0)
+                            confidence_per_point.append(0.0)
+                            extrapolation_count += 1
+
+                avg_station_distance_km = (
+                    sum(distances_to_nearest) / len(distances_to_nearest)
+                    if distances_to_nearest else 0.0
+                )
+                max_station_distance_km = (
+                    max(distances_to_nearest) if distances_to_nearest else 0.0
+                )
+
+                # Count data gaps (> 1 hour between consecutive nav points)
+                data_gap_count = 0
+                for i in range(1, len(processed)):
+                    dt_sec = abs(
+                        (processed[i].t - processed[i - 1].t).total_seconds()
+                    )
+                    if dt_sec > 3600:
+                        data_gap_count += 1
+
                 viz_data = {
                     "processed": [(p.x, p.y, p.t.isoformat(), p.tc) for p in processed],
                     "stations": used_stations,
                     "output_path": config.output_path,
                     "elapsed": elapsed,
                     "rank_limit": d.get("rank_limit", 10),
+                    "use_api": bool(use_api and api_key),
                     "summary": summary,
+                    "confidence_per_point": confidence_per_point,
+                    "avg_station_distance_km": round(avg_station_distance_km, 2),
+                    "max_station_distance_km": round(max_station_distance_km, 2),
+                    "extrapolation_count": extrapolation_count,
+                    "data_gap_count": data_gap_count,
                 }
 
                 # Collect per-point station weights (sampled for performance)

@@ -7,7 +7,7 @@ import sys
 import subprocess
 import time
 
-from PySide6.QtCore import Qt, QThread, Slot
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox,
     QLineEdit, QPushButton, QScrollArea, QFrame, QFileDialog,
@@ -178,6 +178,136 @@ class CollapsibleSection(QWidget):
         self.set_collapsed(not self._collapsed)
 
 
+class _NavPreviewWorker(QThread):
+    """Background worker to scan a nav folder and produce a quick preview string."""
+    preview_ready = Signal(str)
+
+    def __init__(self, folder_path: str):
+        super().__init__()
+        self._folder = folder_path
+
+    def run(self):
+        try:
+            supported_ext = ('.txt', '.csv', '.tsv', '.nav', '.dat')
+            files = sorted(
+                f for f in os.listdir(self._folder)
+                if f.lower().endswith(supported_ext)
+            )
+            if not files:
+                self.preview_ready.emit("Nav 파일 없음")
+                return
+
+            count = len(files)
+            # Quick-parse first file to detect format and time range
+            first_file = os.path.join(self._folder, files[0])
+            lines = []
+            for enc in ['utf-8-sig', 'utf-8', 'euc-kr', 'cp949']:
+                try:
+                    with open(first_file, 'r', encoding=enc) as f:
+                        lines = [l for l in (f.readline() for _ in range(30)) if l]
+                    if lines:
+                        break
+                except Exception:
+                    continue
+
+            if not lines:
+                self.preview_ready.emit(f"{count}개 파일")
+                return
+
+            # Detect format from first data line
+            from tidebedpy.data_io.navigation import (
+                detect_nav_format, FORMAT_NAMES, parse_nav_line,
+            )
+            fmt_id = 0
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                fmt_id = detect_nav_format(stripped)
+                if fmt_id > 0:
+                    break
+
+            fmt_name = FORMAT_NAMES.get(fmt_id, "Unknown")
+            # Shorten format name
+            if "After" in fmt_name:
+                fmt_short = "After"
+            elif "Before" in fmt_name:
+                fmt_short = "Before"
+            elif "Legacy" in fmt_name:
+                fmt_short = "Legacy"
+            elif "CSV" in fmt_name:
+                fmt_short = "CSV"
+            elif "ISO" in fmt_name:
+                fmt_short = "ISO"
+            elif "Generic" in fmt_name:
+                fmt_short = "Generic"
+            else:
+                fmt_short = "?"
+
+            # Parse first and last file for time range
+            first_point = None
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                pt = parse_nav_line(stripped, fmt_id)
+                if pt:
+                    first_point = pt
+                    break
+
+            last_point = None
+            last_file = os.path.join(self._folder, files[-1])
+            try:
+                last_lines = []
+                for enc in ['utf-8-sig', 'utf-8', 'euc-kr', 'cp949']:
+                    try:
+                        with open(last_file, 'r', encoding=enc) as f:
+                            last_lines = f.readlines()
+                        if last_lines:
+                            break
+                    except Exception:
+                        continue
+                for line in reversed(last_lines[-20:]):
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    pt = parse_nav_line(stripped, fmt_id)
+                    if pt:
+                        last_point = pt
+                        break
+            except Exception:
+                pass
+
+            # Approximate total point count
+            approx_points = 0
+            try:
+                avg_size = os.path.getsize(first_file)
+                line_count = len(lines) if lines else 1
+                avg_bytes_per_line = avg_size / max(line_count, 1)
+                total_size = sum(
+                    os.path.getsize(os.path.join(self._folder, f))
+                    for f in files
+                )
+                approx_points = int(total_size / max(avg_bytes_per_line, 1))
+            except Exception:
+                pass
+
+            # Build result string
+            parts = [f"{count}개 파일", fmt_short]
+            if first_point and last_point:
+                t0 = first_point.t.strftime("%Y-%m-%d %H:%M")
+                t1 = last_point.t.strftime("%Y-%m-%d %H:%M")
+                parts.append(f"{t0} ~ {t1}")
+            elif first_point:
+                parts.append(first_point.t.strftime("%Y-%m-%d %H:%M") + " ~")
+            if approx_points > 0:
+                parts.append(f"~{approx_points:,}점")
+
+            self.preview_ready.emit(" | ".join(parts))
+        except Exception as exc:
+            self.preview_ready.emit(f"미리보기 실패: {exc}")
+
+
 class CorrectionPanel(QWidget):
     """Main tidal correction workflow panel."""
 
@@ -199,6 +329,7 @@ class CorrectionPanel(QWidget):
         self._last_viz_data = None
 
         self._history_entries = []
+        self._nav_preview_worker = None
         self._build_ui()
         self._auto_discover_paths()
         self._load_saved_api_key()
@@ -476,6 +607,18 @@ class CorrectionPanel(QWidget):
         self._nav_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         layout.addWidget(self._nav_row)
 
+        # Nav folder quick-preview (B: background-scanned info)
+        self._nav_preview_label = QLabel("")
+        self._nav_preview_label.setStyleSheet(f"""
+            color: {Dark.MUTED};
+            font-size: {Font.XS}px;
+            background: transparent;
+            border: none;
+            padding-left: 114px;
+        """)
+        self._nav_preview_label.setVisible(False)
+        layout.addWidget(self._nav_preview_label)
+
         # Batch list widget (hidden by default)
         self._batch_widget = QWidget()
         batch_inner = QVBoxLayout(self._batch_widget)
@@ -703,6 +846,36 @@ class CorrectionPanel(QWidget):
 
         layout.addLayout(row1)
 
+        # Hint row for Row 1 parameters
+        hint_row1 = QHBoxLayout()
+        hint_row1.setSpacing(Space.LG)
+        hint_row1.setContentsMargins(0, 0, 0, 0)
+
+        self._tide_type_hint = QLabel("실제 조위 관측 데이터 사용 (권장)")
+        self._tide_type_hint.setStyleSheet(
+            f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+        )
+        hint_row1.addWidget(self._tide_type_hint)
+
+        self._rank_hint = QLabel("일반적으로 3~5개 권장")
+        self._rank_hint.setStyleSheet(
+            f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+        )
+        hint_row1.addWidget(self._rank_hint)
+
+        self._tz_hint = QLabel("SBP/Nav 데이터가 UTC 기준인 경우")
+        self._tz_hint.setStyleSheet(
+            f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+        )
+        hint_row1.addWidget(self._tz_hint)
+
+        hint_row1.addStretch()
+        layout.addLayout(hint_row1)
+
+        # Connect signals for dynamic hints
+        self._tide_type_combo.currentTextChanged.connect(self._update_tide_type_hint)
+        self._tz_combo.currentIndexChanged.connect(self._update_tz_hint)
+
         # Row 2: Time interval, checkboxes, tolerance
         row2 = QHBoxLayout()
         row2.setSpacing(Space.LG)
@@ -719,6 +892,20 @@ class CorrectionPanel(QWidget):
 
         row2.addStretch()
         layout.addLayout(row2)
+
+        # Hint row for Row 2 (interval)
+        hint_row2 = QHBoxLayout()
+        hint_row2.setContentsMargins(0, 0, 0, 0)
+        self._interval_hint = QLabel("0 = 모든 Nav 포인트 출력")
+        self._interval_hint.setStyleSheet(
+            f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+        )
+        hint_row2.addWidget(self._interval_hint)
+        hint_row2.addStretch()
+        layout.addLayout(hint_row2)
+
+        # Connect interval signal for warning
+        self._interval_spin.valueChanged.connect(self._update_interval_hint)
 
         # Row 3: Validation
         row3 = QHBoxLayout()
@@ -1161,6 +1348,79 @@ class CorrectionPanel(QWidget):
         """)
 
     # ════════════════════════════════════════════
+    #  Parameter Hint Updates
+    # ════════════════════════════════════════════
+
+    def _update_tide_type_hint(self, text: str):
+        """Update tide type hint based on current selection."""
+        if text == "실측":
+            self._tide_type_hint.setText("실제 조위 관측 데이터 사용 (권장)")
+            self._tide_type_hint.setStyleSheet(
+                f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+        else:
+            self._tide_type_hint.setText("조화상수 기반 예측 조위 사용")
+            self._tide_type_hint.setStyleSheet(
+                f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+
+    def _update_tz_hint(self, index: int):
+        """Update timezone hint based on current selection."""
+        if index < 0 or index >= len(TIMEZONE_OPTIONS):
+            return
+        _label, offset = TIMEZONE_OPTIONS[index]
+        if offset == 0.0:
+            self._tz_hint.setText("SBP/Nav 데이터가 UTC 기준인 경우")
+            self._tz_hint.setStyleSheet(
+                f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+        elif offset == 9.0:
+            self._tz_hint.setText("한국 로컬 시간 기준인 경우")
+            self._tz_hint.setStyleSheet(
+                f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+        else:
+            self._tz_hint.setText(f"Nav 시간이 UTC{'+' if offset > 0 else ''}{offset:.0f} 기준인 경우")
+            self._tz_hint.setStyleSheet(
+                f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+
+    def _update_interval_hint(self, value: int):
+        """Update time interval hint; warn if value is too large."""
+        if value == 0:
+            self._interval_hint.setText("0 = 모든 Nav 포인트 출력")
+            self._interval_hint.setStyleSheet(
+                f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+        elif value > 1200:
+            self._interval_hint.setText("간격이 넓으면 조석 변화를 놓칠 수 있습니다")
+            self._interval_hint.setStyleSheet(
+                f"color: {Dark.ORANGE}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+        else:
+            self._interval_hint.setText(f"{value}초 간격으로 보간 출력")
+            self._interval_hint.setStyleSheet(
+                f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent; border: none;"
+            )
+
+    def _on_nav_preview_ready(self, text: str):
+        """Slot: nav preview worker finished."""
+        self._nav_preview_label.setText(text)
+        self._nav_preview_label.setVisible(bool(text))
+
+    def _scan_nav_folder(self, folder: str):
+        """Start a background thread to scan the nav folder."""
+        if self._nav_preview_worker is not None:
+            self._nav_preview_worker.quit()
+            self._nav_preview_worker.wait(500)
+        self._nav_preview_label.setText("스캔 중...")
+        self._nav_preview_label.setVisible(True)
+        self._nav_preview_worker = _NavPreviewWorker(folder)
+        self._nav_preview_worker.preview_ready.connect(self._on_nav_preview_ready)
+        self._nav_preview_worker.finished.connect(self._nav_preview_worker.deleteLater)
+        self._nav_preview_worker.start()
+
+    # ════════════════════════════════════════════
     #  Auto-Discovery
     # ════════════════════════════════════════════
 
@@ -1189,8 +1449,12 @@ class CorrectionPanel(QWidget):
     def _on_nav_changed(self, nav_path: str):
         """When Nav path changes, try to re-discover DB/station and suggest output."""
         if not nav_path or not os.path.isdir(nav_path):
+            self._nav_preview_label.setVisible(False)
             self._update_drop_zone_status()
             return
+
+        # B: Background nav folder preview scan
+        self._scan_nav_folder(nav_path)
 
         # Suggest output path
         if not self._output_row.text():

@@ -81,6 +81,21 @@ class TideBedApp(GeoViewApp):
         sc_stop = QShortcut(QKeySequence("Escape"), self)
         sc_stop.activated.connect(self._correction._stop)
 
+    # ── Project Context Integration ──
+
+    def on_project_context_changed(self, ctx, old_ctx=None):
+        """공유 프로젝트 컨텍스트 변경 시 timezone_offset 힌트."""
+        if ctx is None:
+            return
+        parts = []
+        if ctx.timezone_offset != 0:
+            sign = "+" if ctx.timezone_offset >= 0 else ""
+            parts.append(f"TZ: UTC{sign}{ctx.timezone_offset}")
+        if ctx.survey_area:
+            parts.append(f"Area: {ctx.survey_area}")
+        if parts:
+            self.status_bar.showMessage(" | ".join(parts), 5000)
+
 
 def main():
     TideBedApp.run()

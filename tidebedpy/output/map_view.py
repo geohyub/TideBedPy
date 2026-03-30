@@ -655,7 +655,7 @@ def generate_station_map(stations, nav_points=None,
            bbox=dict(boxstyle='round,pad=0.5', fc='white',
                     ec='#ccc', alpha=0.92),
            zorder=15)
-    _add_brief_box(ax, _build_map_brief_lines(summary), loc='lower left')
+    # brief box는 tide graph에서만 표시 (지도에서는 제거)
 
     # ── 프레임 ──
     for spine in ax.spines.values():
@@ -786,8 +786,6 @@ def generate_correction_map(stations, nav_points,
 
     mid_lat = (view_bbox[1] + view_bbox[3]) / 2
     ax1.set_aspect(1.0 / np.cos(np.radians(mid_lat)))
-    _add_brief_box(ax1, _build_map_brief_lines(summary), loc='lower left')
-
     _draw_compass(ax1)
 
     # ── 하단: Tc 시계열 ──

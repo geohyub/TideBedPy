@@ -72,14 +72,14 @@ class WeightChart(QWidget):
         """)
 
         plot_item = self._plot_widget.getPlotItem()
-        plot_item.showGrid(x=True, y=True, alpha=0.3)
+        plot_item.showGrid(x=True, y=True, alpha=0.15)
         for axis_name in ("bottom", "left"):
             ax = plot_item.getAxis(axis_name)
-            ax.setPen(pg.mkPen("#1F2937"))
-            ax.setTextPen(pg.mkPen(Dark.MUTED))
-            ax.setTickFont(pg.QtGui.QFont("Pretendard", 10))
+            ax.setPen(pg.mkPen("#374151", width=0.5))
+            ax.setTextPen(pg.mkPen(Dark.TEXT))
+            ax.setTickFont(pg.QtGui.QFont("Pretendard", 9))
         label_style = {"color": Dark.TEXT, "font-size": "11px"}
-        plot_item.setLabel("left", "Weight", **label_style)
+        plot_item.setLabel("left", "기여도 (Weight)", **label_style)
         plot_item.setLabel("bottom", "", **label_style)
         plot_item.setYRange(0, 1.05)
 
@@ -150,20 +150,19 @@ class WeightChart(QWidget):
             self._plot_widget.addItem(curve)
             self._items.append(curve)
 
-        # Manual legend box (top-right, always safe)
+        # Manual legend box (top-right) — readable size
         legend_lines = []
         for i, name in enumerate(station_names):
             color = PALETTE[i % len(PALETTE)]
-            # Use a colored square block for clear color matching
             legend_lines.append(
-                f"<span style='color:{color};font-size:14px;'>"
+                f"<span style='color:{color};font-size:16px;font-weight:bold;'>"
                 f"&#9632;</span> "
-                f"<span style='color:{Dark.TEXT};font-size:10px;'>{name}</span>"
+                f"<span style='color:{Dark.TEXT};font-size:12px;'>{name}</span>"
             )
         legend_html = "<br>".join(legend_lines)
         legend_item = pg.TextItem(
-            html=f"<div style='background:{Dark.NAVY}EE;padding:6px 10px;"
-                 f"border:1px solid {Dark.BORDER};border-radius:4px;'>"
+            html=f"<div style='background:{Dark.NAVY}F0;padding:8px 14px;"
+                 f"border:1px solid {Dark.BORDER};border-radius:6px;'>"
                  f"{legend_html}</div>",
             anchor=(1, 0),
         )

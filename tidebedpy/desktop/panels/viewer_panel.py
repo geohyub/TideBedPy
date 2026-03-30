@@ -472,9 +472,12 @@ class ViewerPanel(QWidget):
 
         tc_arr = np.array(tc_values) if HAS_PYQTGRAPH else tc_values
 
+        # Confidence data from worker
+        confidence_per_point = viz_data.get("confidence_per_point", [])
+
         # ── 1. Tide correction time series ──
         try:
-            self._populate_tide_chart(times, tc_values)
+            self._populate_tide_chart(times, tc_values, confidence_per_point)
         except Exception as e:
             logger.error(f"시계열 차트 오류: {e}")
 
@@ -486,7 +489,7 @@ class ViewerPanel(QWidget):
 
         # ── 3. Navigation track map ──
         try:
-            self._populate_map(lons, lats, tc_values, stations)
+            self._populate_map(lons, lats, tc_values, stations, confidence_per_point)
         except Exception as e:
             logger.error(f"항적 지도 오류: {e}")
 
@@ -499,7 +502,7 @@ class ViewerPanel(QWidget):
         # ── 5. Statistics summary ──
         try:
             self._populate_stats_from_result(
-                times, tc_arr, stations, elapsed
+                times, tc_arr, stations, elapsed, viz_data
             )
         except Exception as e:
             logger.error(f"통계 요약 오류: {e}")
@@ -693,11 +696,65 @@ class ViewerPanel(QWidget):
             "contributors": [],
         }
 
-    def _populate_tide_chart(self, times: List[datetime], values: List[float]):
-        """Fill tide correction time series chart."""
+    def _populate_tide_chart(self, times: List[datetime], values: List[float],
+                             confidence: Optional[List[float]] = None):
+        """Fill tide correction time series chart with confidence overlay."""
         if not self._tide_chart or not HAS_TIDE_CHART:
             return
         self._tide_chart.set_data(times, values, label="Tc")
+
+        # Add confidence color bands as background overlay
+        if confidence and HAS_PYQTGRAPH and len(confidence) == len(times) and len(times) > 1:
+            try:
+                plot_item = self._tide_chart._plot_widget.getPlotItem()
+                timestamps = np.array([t.timestamp() for t in times])
+
+                # Group consecutive points by confidence level into spans
+                CONF_COLORS = {
+                    "high":   (16, 185, 129, 25),   # green  #10B981
+                    "medium": (245, 158, 11, 25),    # yellow #F59E0B
+                    "low":    (239, 68, 68, 25),     # red    #EF4444
+                }
+
+                def _conf_level(c):
+                    if c > 0.8:
+                        return "high"
+                    elif c >= 0.5:
+                        return "medium"
+                    return "low"
+
+                # Build spans of uniform confidence level
+                spans = []
+                cur_level = _conf_level(confidence[0])
+                span_start = 0
+                for i in range(1, len(confidence)):
+                    lvl = _conf_level(confidence[i])
+                    if lvl != cur_level:
+                        spans.append((span_start, i - 1, cur_level))
+                        cur_level = lvl
+                        span_start = i
+                spans.append((span_start, len(confidence) - 1, cur_level))
+
+                # Add LinearRegionItem for each span (only medium/low to avoid clutter)
+                for s_start, s_end, level in spans:
+                    if level == "high":
+                        continue  # skip high-confidence -- clean background
+                    t0 = float(timestamps[s_start])
+                    t1 = float(timestamps[min(s_end + 1, len(timestamps) - 1)])
+                    if t1 <= t0:
+                        t1 = t0 + 1.0
+                    rgba = CONF_COLORS[level]
+                    region = pg.LinearRegionItem(
+                        values=(t0, t1),
+                        orientation='vertical',
+                        movable=False,
+                        brush=pg.mkBrush(*rgba),
+                        pen=pg.mkPen(None),
+                    )
+                    region.setZValue(-10)
+                    plot_item.addItem(region)
+            except Exception as e:
+                logger.debug(f"신뢰도 오버레이 생략: {e}")
 
     def _populate_weight_chart(self, weight_times_raw: list, station_weights: dict):
         """Fill station weight contribution chart."""
@@ -736,7 +793,8 @@ class ViewerPanel(QWidget):
 
     def _populate_map(self, lons: List[float], lats: List[float],
                       tc_values: List[float],
-                      stations: List[Tuple[str, float, float]]):
+                      stations: List[Tuple[str, float, float]],
+                      confidence: Optional[List[float]] = None):
         """Fill the navigation track map with coastline, nav track, and stations."""
         if not self._map_widget or not HAS_PYQTGRAPH:
             return
@@ -836,6 +894,19 @@ class ViewerPanel(QWidget):
         ]
         for name, _, _ in stations:
             legend_lines.append(f"  -- {name}")
+
+        # Confidence badge
+        if confidence and len(confidence) > 0:
+            valid_conf = [c for c in confidence if c > 0.0]
+            if valid_conf:
+                avg_conf = sum(valid_conf) / len(valid_conf)
+                if avg_conf > 0.8:
+                    legend_lines.append("Confidence: HIGH")
+                elif avg_conf >= 0.5:
+                    legend_lines.append("Confidence: MEDIUM")
+                else:
+                    legend_lines.append("Confidence: LOW")
+
         legend_text = pg.TextItem(
             text="\n".join(legend_lines),
             anchor=(0, 0),
@@ -878,12 +949,16 @@ class ViewerPanel(QWidget):
         land_pen = QPen(QColor(74, 85, 104, 200), 0.5)   # thin border
 
         for ring in polygons:
-            if len(ring) < 3:
+            n_ring = len(ring)
+            if n_ring < 3:
                 continue
-            # Downsample dense rings for performance, but keep shape intact
-            step = max(1, len(ring) // 800)
-            if step > 1:
-                ring = ring[::step] + [ring[-1]]
+            # Adaptive downsample: keep at least 3000 pts for large rings,
+            # small rings (<500 pts) are kept intact
+            if n_ring > 500:
+                max_pts = max(3000, min(n_ring, 8000))
+                step = max(1, n_ring // max_pts)
+                if step > 1:
+                    ring = ring[::step] + [ring[-1]]
 
             poly_points = [QPointF(float(p[0]), float(p[1])) for p in ring]
             qpoly = QPolygonF(poly_points)
@@ -1025,8 +1100,9 @@ class ViewerPanel(QWidget):
     def _populate_stats_from_result(self, times: List[datetime],
                                     tc_arr: "np.ndarray",
                                     stations: List[Tuple[str, float, float]],
-                                    elapsed: float):
-        """Fill the stats grid from CorrectionWorker result data (3x3 grid)."""
+                                    elapsed: float,
+                                    viz_data: Optional[Dict] = None):
+        """Fill the stats grid from CorrectionWorker result data (3x3 grid + confidence row)."""
         self._clear_stats_grid()
 
         if len(times) < 2:
@@ -1046,11 +1122,12 @@ class ViewerPanel(QWidget):
         range_val = max_val - min_val
 
         # Station names for display
+        is_api = self._viz_data.get("use_api", False) if self._viz_data else False
         rank_limit = self._viz_data.get("rank_limit", "?") if self._viz_data else "?"
         st_names = ", ".join(n for n, _, _ in stations) if stations else "N/A"
-        st_display = f"{len(stations)}개 (N={rank_limit})"
+        st_display = f"{len(stations)}개" if is_api else f"{len(stations)}개 (N={rank_limit})"
 
-        # 3x3 grid + extra row
+        # 3x3 grid
         metrics = [
             ("총 포인트",    f"{len(tc_arr):,}"),
             ("기간",        duration_str),
@@ -1066,8 +1143,32 @@ class ViewerPanel(QWidget):
         for idx, (label, value) in enumerate(metrics):
             row = idx // 3
             col = idx % 3
-
             self._add_stat_cell(row, col, label, value)
+
+        # ── Confidence / uncertainty metrics (row 3) ──
+        vd = viz_data or self._viz_data or {}
+        avg_dist = vd.get("avg_station_distance_km", 0.0)
+        max_dist = vd.get("max_station_distance_km", 0.0)
+        extrap_count = vd.get("extrapolation_count", 0)
+        gap_count = vd.get("data_gap_count", 0)
+        total_pts = len(tc_arr) if len(tc_arr) > 0 else 1
+        extrap_pct = extrap_count / total_pts * 100.0
+
+        if avg_dist > 0 or max_dist > 0 or extrap_count > 0 or gap_count > 0:
+            # Row 3: confidence metrics
+            self._add_stat_cell(3, 0, "평균 관측소 거리", f"{avg_dist:,.1f} km")
+            self._add_stat_cell(3, 1, "최대 관측소 거리", f"{max_dist:,.1f} km")
+
+            # Extrapolation cell with red warning when > 5%
+            extrap_text = f"{extrap_count:,}개 ({extrap_pct:.1f}%)"
+            if extrap_pct > 5.0:
+                self._add_stat_cell(3, 2, "외삽 구간", extrap_text,
+                                    value_color=Dark.RED)
+            else:
+                self._add_stat_cell(3, 2, "외삽 구간", extrap_text)
+
+            # Row 4: data gap count
+            self._add_stat_cell(4, 0, "데이터 갭", f"{gap_count:,}개")
 
     def _populate_stats_from_files(self, series_list):
         """Fill the stats grid for manual TID file loading."""
@@ -1114,7 +1215,8 @@ class ViewerPanel(QWidget):
     #  Widget helpers
     # ══════════════════════════════════════════════════════════
 
-    def _add_stat_cell(self, row: int, col: int, label: str, value: str):
+    def _add_stat_cell(self, row: int, col: int, label: str, value: str,
+                       value_color: Optional[str] = None):
         """Add a single professional metric card to the stats grid."""
         cell = QFrame()
         cell.setMinimumHeight(80)
@@ -1140,9 +1242,10 @@ class ViewerPanel(QWidget):
         """)
         cell_layout.addWidget(lbl)
 
+        val_clr = value_color or Dark.TEXT_BRIGHT
         val = QLabel(value)
         val.setStyleSheet(f"""
-            color: {Dark.TEXT_BRIGHT};
+            color: {val_clr};
             font-size: 20px;
             font-weight: {Font.BOLD};
             background: transparent;

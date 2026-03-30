@@ -151,14 +151,10 @@ def _build_brief_lines(summary: Optional[dict], max_lines: int = 6) -> List[str]
         lines.append(f"프리셋 의미: {preset_summary}")
 
     story = summary.get("story", {})
-    for section_name in ("workflow", "quality", "stations"):
+    for section_name in ("workflow", "quality"):
         section_lines = story.get(section_name, [])
         if section_lines:
             lines.append(str(section_lines[0]))
-
-    guidance = story.get("guidance", [])
-    if guidance:
-        lines.append(f"읽는 방법: {guidance[0]}")
 
     contributors = summary.get("contributors", [])[:2]
     if contributors:
@@ -237,7 +233,7 @@ def _build_compare_driver_lines(
 
 
 def _add_brief_box(ax, lines: List[str], *, loc: str = "upper right") -> None:
-    """Add a small text briefing box inside a chart."""
+    """Add a readable text briefing box inside a chart."""
     if not lines:
         return
 
@@ -250,11 +246,12 @@ def _add_brief_box(ax, lines: List[str], *, loc: str = "upper right") -> None:
         y,
         "\n".join(lines),
         transform=ax.transAxes,
-        fontsize=8,
+        fontsize=7.5,
         ha=ha,
         va=va,
         color=_C.TEXT,
-        bbox=dict(boxstyle="round,pad=0.55", fc="white", ec=_C.GRID, alpha=0.95),
+        linespacing=1.5,
+        bbox=dict(boxstyle="round,pad=0.6", fc="white", ec=_C.GRID, alpha=0.92),
         zorder=20,
     )
 
@@ -300,29 +297,33 @@ def _add_contributor_inset(
     if not contributors:
         return
 
-    bounds = [0.03, 0.10, 0.26, 0.24] if "left" in loc else [0.71, 0.10, 0.26, 0.24]
+    # Compact inset — smaller to avoid obscuring main chart
+    bounds = [0.03, 0.06, 0.20, 0.18] if "left" in loc else [0.77, 0.06, 0.20, 0.18]
     inset = ax.inset_axes(bounds)
 
     labels = [str(item.get("station_name", "")) for item in contributors][::-1]
     values = [float(item.get("coverage_pct", 0.0)) for item in contributors][::-1]
-    inset.barh(range(len(values)), values, color=_C.BLUE_LIGHT, edgecolor=_C.BLUE, alpha=0.95)
+
+    bar_height = 0.6 if len(values) <= 3 else 0.5
+    inset.barh(range(len(values)), values, height=bar_height,
+               color=_C.BLUE_LIGHT, edgecolor=_C.BLUE, alpha=0.90, linewidth=0.6)
     inset.set_yticks(range(len(values)))
-    inset.set_yticklabels(labels, fontsize=6.5, color=_C.TEXT)
-    inset.set_xlabel("커버리지 %", fontsize=6.5, color=_C.TEXT_LIGHT, labelpad=1)
-    inset.tick_params(axis="x", labelsize=6.5, colors=_C.TEXT_LIGHT)
-    inset.tick_params(axis="y", labelsize=6.5, colors=_C.TEXT)
+    inset.set_yticklabels(labels, fontsize=7, color=_C.TEXT, fontweight="medium")
+    inset.set_xlabel("커버리지 %", fontsize=6, color=_C.TEXT_LIGHT, labelpad=1)
+    inset.tick_params(axis="x", labelsize=6, colors=_C.TEXT_LIGHT)
+    inset.tick_params(axis="y", labelsize=7, colors=_C.TEXT, length=0)
     inset.grid(True, axis="x", linestyle=":", alpha=0.25, color=_C.GRID)
     inset.set_facecolor("white")
-    inset.set_title(title, fontsize=7.5, color=_C.TEXT, pad=2, fontweight="bold")
+    inset.set_title(title, fontsize=7, color=_C.TEXT, pad=2, fontweight="bold")
     for spine in inset.spines.values():
         spine.set_color(_C.GRID)
-        spine.set_linewidth(0.7)
+        spine.set_linewidth(0.5)
 
     max_value = max(values) if values else 0.0
-    inset.set_xlim(0, max(max_value * 1.18, 1.0))
+    inset.set_xlim(0, max(max_value * 1.25, 1.0))
     for idx, value in enumerate(values):
-        inset.text(value + max(max_value * 0.02, 0.1), idx, f"{value:.1f}%",
-                   va="center", fontsize=6.2, color=_C.TEXT)
+        inset.text(value + max(max_value * 0.02, 0.3), idx, f"{value:.1f}%",
+                   va="center", fontsize=6.5, color=_C.BLUE, fontweight="bold")
 
 
 def _build_compare_contributor_rows(
@@ -540,35 +541,36 @@ def generate_tide_graph(tid_path: str, output_image: str = None,
             basename, output_image, title, dpi, tolerance_cm)
 
     # ── 단독 결과 그래프 (참조 없음) ──
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig, ax = plt.subplots(figsize=(18, 7), dpi=dpi)
 
-    ax.plot(times, values, color=_C.BLUE, linewidth=1.0,
+    ax.plot(times, values, color=_C.BLUE, linewidth=1.2,
             label='조석보정값 Tc', zorder=3)
-    ax.fill_between(times, values, alpha=0.12, color=_C.BLUE, zorder=2)
+    ax.fill_between(times, values, alpha=0.10, color=_C.BLUE, zorder=2)
 
     if title is None:
         title = f'조석보정 결과 — {basename}'
     _style_ax(ax, ylabel='조석보정값 Tc (m)', xlabel='시간')
-    ax.set_title(title, fontsize=13, fontweight='bold',
-                 color=_C.TITLE, pad=12)
+    ax.set_title(title, fontsize=14, fontweight='bold',
+                 color=_C.TITLE, pad=14)
 
     hours = (times[-1] - times[0]).total_seconds() / 3600
     _auto_xfmt(ax, hours)
 
     mean_v = sum(values) / len(values)
-    ax.axhline(y=mean_v, color=_C.ORANGE, linewidth=0.9,
-               linestyle='--', alpha=0.7, zorder=1)
+    ax.axhline(y=mean_v, color=_C.ORANGE, linewidth=1.0,
+               linestyle='--', alpha=0.6, zorder=1,
+               label=f'평균: {mean_v:.3f} m')
 
-    # 통계 박스
+    # 통계 박스 — 읽기 쉬운 크기
     stats = (f'데이터: {len(values):,}개\n'
-             f'평균: {mean_v:.3f}m\n'
-             f'범위: {min(values):.3f} ~ {max(values):.3f}m')
-    ax.text(0.02, 0.97, stats, transform=ax.transAxes, fontsize=8,
-            va='top', ha='left',
-            bbox=dict(boxstyle='round,pad=0.5', fc='white',
+             f'평균: {mean_v:.3f} m\n'
+             f'범위: {min(values):.3f} ~ {max(values):.3f} m')
+    ax.text(0.02, 0.97, stats, transform=ax.transAxes, fontsize=9,
+            va='top', ha='left', linespacing=1.5,
+            bbox=dict(boxstyle='round,pad=0.6', fc='white',
                       ec=_C.GRID, alpha=0.92))
     _annotate_extrema(ax, times, values)
-    _add_brief_box(ax, _build_brief_lines(summary), loc='upper right')
+    _add_brief_box(ax, _build_brief_lines(summary, max_lines=5), loc='upper right')
     _add_contributor_inset(ax, summary, loc='lower left')
     ax.legend(loc='lower right', fontsize=9, framealpha=0.9,
               edgecolor=_C.GRID)

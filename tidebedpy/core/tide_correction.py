@@ -33,6 +33,7 @@ class StationCorrection:
     station_name: str = ''
     arr_idx: int = -1
     weight: float = 0.0           # IDW 가중치 (전체 기준항 대비)
+    distance_km: float = 0.0      # 항적→기준항 거리 (km)
     h_ratio: float = 0.0          # SprRange_point / SprRange_station
     time_corrector: float = 0.0   # MHWI_point - MHWI_station (hours)
     corrected_time: Optional[datetime] = None
@@ -43,21 +44,56 @@ class StationCorrection:
 class TideCorrectionEngine:
     """조석보정 엔진 (v2.1 — 속도 최적화 + UTC 오프셋 지원)"""
 
-    def __init__(self, config, stations: list, cotidal):
+    def __init__(self, config, stations: list, cotidal,
+                 selected_names: Optional[List[str]] = None):
         """
         Args:
             config: TideBedConfig
             stations: List[RefStation]
             cotidal: CoTidalGrid
+            selected_names: 사용자가 지정한 관측소 이름 리스트.
+                            지정 시 해당 관측소만 IDW 대상에 포함.
+                            None이면 조위 데이터가 로드된 전체 기준항 사용.
         """
         self.config = config
         self.stations = stations
         self.cotidal = cotidal
         self.last_corrections: List[StationCorrection] = []
 
-        # === 속도 최적화: 기준항 좌표 배열 미리 구성 ===
-        self._station_lons = np.array([s.longitude for s in stations])
-        self._station_lats = np.array([s.latitude for s in stations])
+        # === IDW 대상 기준항 필터링 ===
+        # 1순위: 사용자가 명시적으로 선택한 관측소 (API 선택 등)
+        # 2순위: 조위 데이터가 로드된 전체 기준항
+        tide_type = config.tide_series_type
+        selected_set = set(selected_names) if selected_names else None
+
+        self._active_indices = []
+        for i, s in enumerate(stations):
+            # 사용자 지정이 있으면 해당 이름만 허용
+            if selected_set and s.name not in selected_set:
+                continue
+
+            if tide_type == '예측':
+                has_data = (hasattr(s, 'tide_pred') and s.tide_pred
+                            and getattr(s.tide_pred, 'records', None))
+            else:
+                has_data = (hasattr(s, 'tide_obs') and s.tide_obs
+                            and getattr(s.tide_obs, 'records', None))
+            if has_data and s.spr_range > 0:
+                self._active_indices.append(i)
+
+        if self._active_indices:
+            self._station_lons = np.array([stations[i].longitude for i in self._active_indices])
+            self._station_lats = np.array([stations[i].latitude for i in self._active_indices])
+            self._station_names = [stations[i].name for i in self._active_indices]
+        else:
+            # Fallback: 전체 기준항 사용 (조위 로드 전 호출 시)
+            self._active_indices = list(range(len(stations)))
+            self._station_lons = np.array([s.longitude for s in stations])
+            self._station_lats = np.array([s.latitude for s in stations])
+            self._station_names = [s.name for s in stations]
+
+        active_names = [stations[i].name for i in self._active_indices]
+        logger.info(f"IDW 대상 기준항: {len(self._active_indices)}개 — {', '.join(active_names)}")
 
         # === Co-tidal 섹터 캐시 ===
         self._sector_cache = {}
@@ -110,15 +146,26 @@ class TideCorrectionEngine:
         """
         self.last_corrections = []
 
-        # [1] IDW 가중치 계산 (haversine 벡터화 — vincenty 대비 50-100x 빠름)
-        idw_weights = compute_idw_weights_vectorized(
+        # [1] IDW 가중치 계산 (조위 데이터 있는 기준항만 대상)
+        idw_weights_raw = compute_idw_weights_vectorized(
             nav.x, nav.y,
             self._station_lons, self._station_lats,
-            [s.name for s in self.stations],
+            self._station_names,
         )
-        if not idw_weights:
+        if not idw_weights_raw:
             logger.warning(f"IDW 가중치 계산 실패 - 유효 관측소 없음 ({nav.x:.4f}, {nav.y:.4f})")
             return TcError.FAIL
+
+        # station_idx를 필터링된 인덱스에서 원래 stations 인덱스로 매핑
+        idw_weights = []
+        for sw in idw_weights_raw:
+            real_idx = self._active_indices[sw.station_idx]
+            idw_weights.append(StationWeight(
+                station_idx=real_idx,
+                station_name=sw.station_name,
+                weight=sw.weight,
+                distance_m=sw.distance_m,
+            ))
 
         # [2] Co-tidal 값 보간 (캐시 사용)
         cotidal_result = self._get_cotidal_cached(nav.x, nav.y)
@@ -153,6 +200,7 @@ class TideCorrectionEngine:
                 station_name=sw.station_name,
                 arr_idx=sw.station_idx,
                 weight=sw.weight,
+                distance_km=sw.distance_m / 1000.0,
             )
 
             # 조위 시계열 선택
