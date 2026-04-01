@@ -47,9 +47,11 @@ def predict_tide_pytmd(
         import pyTMD
     except ImportError:
         raise ImportError(
-            "pyTMD 라이브러리가 설치되지 않았습니다.\n"
-            "설치: pip install pyTMD\n"
-            "글로벌 조석 모델을 사용하려면 pyTMD와 모델 데이터가 필요합니다."
+            "pyTMD 미설치. 글로벌 조석 모델(FES2014/TPXO9) 사용을 위해 설치하세요:\n"
+            "  pip install pyTMD\n"
+            "모델 데이터는 별도 다운로드 필요:\n"
+            "  FES2014: https://www.aviso.altimetry.fr/en/data/products/auxiliary-products/global-tide-fes.html\n"
+            "  TPXO9: https://www.tpxo.net/global/tpxo9-atlas"
         )
 
     import os
@@ -77,48 +79,41 @@ def predict_tide_pytmd(
     lon_arr = np.array(lons, dtype=np.float64)
     lat_arr = np.array(lats, dtype=np.float64)
 
+    # Convert Python datetimes to numpy datetime64 for pyTMD
+    delta_time = np.array(times, dtype="datetime64[us]")
+
     try:
-        # pyTMD v2.x API
         from pyTMD.compute import tide_elevations
 
-        # Convert datetimes to pyTMD time format
-        tide_m = tide_elevations(
-            lon_arr, lat_arr, times,
-            DIRECTORY=model_dir,
-            MODEL=pytmd_model,
-            EPSG=4326,
-            TYPE='drift',
-        )
+        # pyTMD v3.x uses lowercase parameter names;
+        # v2.x uses UPPERCASE.  Try v3 first, fall back to v2.
+        try:
+            tide_m = tide_elevations(
+                lon_arr, lat_arr, delta_time,
+                directory=model_dir,
+                model=pytmd_model,
+                EPSG=4326,
+                TYPE='drift',
+            )
+        except TypeError:
+            # v2.x uppercase parameters
+            tide_m = tide_elevations(
+                lon_arr, lat_arr, delta_time,
+                DIRECTORY=model_dir,
+                MODEL=pytmd_model,
+                EPSG=4326,
+                TYPE='drift',
+            )
 
         # Convert from meters to centimeters
-        tide_cm = (np.array(tide_m) * 100.0).tolist()
+        tide_cm = (np.asarray(tide_m, dtype=float) * 100.0).tolist()
 
-    except ImportError:
-        # Fallback: try pyTMD v1.x API
-        try:
-            from pyTMD.predict import predict_tide
-            from pyTMD.read_tide_model import read_tide_model
-            from pyTMD.time import convert_datetime
-
-            # Convert datetime to pyTMD delta times
-            delta_time = convert_datetime(np.array(times))
-
-            # Read model constituents
-            amp, ph, c = read_tide_model(
-                model_dir, model_file=pytmd_model,
-                EPSG=4326, TYPE='z',
-            )
-
-            # Predict
-            tide_m = predict_tide(
-                delta_time, amp, ph,
-                DELTAT=0.0, CORRECTIONS='GOT',
-            )
-            tide_cm = (np.array(tide_m) * 100.0).tolist()
-
-        except Exception as e:
-            logger.error(f"pyTMD v1.x fallback 실패: {e}")
-            raise
+    except ImportError as e:
+        logger.error(f"pyTMD.compute 임포트 실패: {e}")
+        raise ImportError(
+            "pyTMD.compute.tide_elevations을 임포트할 수 없습니다.\n"
+            "pyTMD >= 2.0 이 필요합니다: pip install pyTMD"
+        ) from e
 
     except Exception as e:
         logger.error(f"pyTMD 예측 실패: {e}")

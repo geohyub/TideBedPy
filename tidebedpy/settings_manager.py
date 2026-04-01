@@ -110,6 +110,16 @@ def save_preset(name: str, settings: Dict, base_dir: str = None) -> str:
     return filepath
 
 
+PRESET_DEFAULTS = {
+    'nav_path': '', 'tide_path': '', 'output_path': '', 'db_path': '',
+    'station_path': '', 'tide_type': '실측', 'rank_limit': 10,
+    'time_interval': 0, 'timezone': 'GMT', 'utc_offset': 0.0,
+    'write_detail': True, 'use_api': False, 'do_validate': False,
+    'generate_graph': True, 'tolerance_cm': 1.0,
+    'tide_model': 'KHOA', 'output_format': 'TID',
+}
+
+
 def load_preset(filepath: str) -> Optional[Dict]:
     """
     프리셋 파일에서 설정을 불러온다.
@@ -127,7 +137,11 @@ def load_preset(filepath: str) -> Optional[Dict]:
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data.get('settings', {})
+        settings = data.get('settings', {})
+        # Merge with defaults so missing fields get safe values
+        merged = dict(PRESET_DEFAULTS)
+        merged.update(settings)
+        return merged
     except Exception as e:
         logger.error(f"프리셋 로드 실패: {e}")
         return None

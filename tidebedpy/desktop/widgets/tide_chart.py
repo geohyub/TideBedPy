@@ -83,6 +83,22 @@ if HAS_PYQTGRAPH:
             return [(major, 0), (major / 4, 0)]
 
 
+    class CommaAxisItem(pg.AxisItem):
+        """Y-axis that formats numbers with comma separators."""
+
+        def tickStrings(self, values, scale, spacing):
+            if not values:
+                return []
+            # Choose decimal places based on value range
+            vrange = max(abs(v) for v in values) if values else 1
+            if vrange < 1:
+                return [f"{v:,.3f}" for v in values]
+            elif vrange < 100:
+                return [f"{v:,.1f}" for v in values]
+            else:
+                return [f"{v:,.0f}" for v in values]
+
+
 class TideChart(QWidget):
     """Interactive tide correction chart with zoom, pan, and crosshair."""
 
@@ -121,7 +137,13 @@ class TideChart(QWidget):
         self._dt_axis.setTextPen(pg.mkPen(Dark.MUTED))
         self._dt_axis.setStyle(tickFont=pg.QtGui.QFont(Font.MONO, 10))
 
-        self._plot_widget = pg.PlotWidget(axisItems={"bottom": self._dt_axis})
+        # -- Comma-formatted Y axis --
+        self._comma_axis = CommaAxisItem(orientation="left")
+        self._comma_axis.setPen(pg.mkPen(GRID_COLOR))
+        self._comma_axis.setTextPen(pg.mkPen(Dark.MUTED))
+        self._comma_axis.setStyle(tickFont=pg.QtGui.QFont(Font.MONO, 10))
+
+        self._plot_widget = pg.PlotWidget(axisItems={"bottom": self._dt_axis, "left": self._comma_axis})
         self._plot_widget.setMinimumHeight(220)
         self._plot_widget.setStyleSheet(f"""
             border: 1px solid {Dark.BORDER};
@@ -131,11 +153,7 @@ class TideChart(QWidget):
         plot_item = self._plot_widget.getPlotItem()
         plot_item.showGrid(x=True, y=True, alpha=0.3)
 
-        # Left axis styling
-        left_axis = plot_item.getAxis("left")
-        left_axis.setPen(pg.mkPen(GRID_COLOR))
-        left_axis.setTextPen(pg.mkPen(Dark.MUTED))
-        left_axis.setStyle(tickFont=pg.QtGui.QFont(Font.MONO, 10))
+        # Left axis styling is handled by CommaAxisItem above
 
         # Axis labels with larger font
         label_style = {"color": Dark.TEXT, "font-size": "11px"}
@@ -238,10 +256,12 @@ class TideChart(QWidget):
                     label_text = f"{gap_hours:.0f}h" if gap_hours < 48 else f"{gap_hours/24:.1f}d"
                     gap_label = pg.TextItem(
                         text=f"GAP {label_text}",
-                        color="#6B7280",
+                        color="#9CA3AF",
                         anchor=(0.5, 1),
+                        border=pg.mkPen("#374151"),
+                        fill=pg.mkBrush("#0D1117DD"),
                     )
-                    gap_label.setFont(pg.QtGui.QFont("Pretendard", 8))
+                    gap_label.setFont(pg.QtGui.QFont("Pretendard", 9))
                     plot_item.addItem(gap_label)
                     gap_label.setPos(mid_t, mid_v)
                     self._gap_regions.append(gap_label)

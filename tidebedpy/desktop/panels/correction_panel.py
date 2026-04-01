@@ -2,10 +2,13 @@
 
 import html
 import json
+import logging
 import os
 import sys
 import subprocess
 import time
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
@@ -47,8 +50,16 @@ TIMEZONE_OPTIONS = [
 ]
 
 
-def _card(title: str = "") -> tuple[QFrame, QVBoxLayout]:
-    """Create a dark-theme card frame with optional title."""
+def _card(title: str = "", accent_color: str = None) -> tuple[QFrame, QVBoxLayout]:
+    """Create a dark-theme card frame with optional title.
+
+    Args:
+        title: Card header text. Empty string means no header.
+        accent_color: Color for the left accent bar. Defaults to ACCENT
+                      for primary cards. Use Dark.SLATE for secondary cards.
+    """
+    if accent_color is None:
+        accent_color = ACCENT
     card = QFrame()
     card.setObjectName("corrCard")
     card.setStyleSheet(f"""
@@ -66,7 +77,7 @@ def _card(title: str = "") -> tuple[QFrame, QVBoxLayout]:
         hdr = QHBoxLayout()
         bar = QFrame()
         bar.setFixedSize(4, 16)
-        bar.setStyleSheet(f"background: {ACCENT}; border: none; border-radius: 2px;")
+        bar.setStyleSheet(f"background: {accent_color}; border: none; border-radius: 2px;")
         hdr.addWidget(bar)
         lbl = QLabel(title)
         lbl.setStyleSheet(f"""
@@ -96,7 +107,7 @@ class CollapsibleSection(QWidget):
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
-        self._collapsed = False
+        self._collapsed = True
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -153,8 +164,9 @@ class CollapsibleSection(QWidget):
 
         main_layout.addLayout(header)
 
-        # Content area
+        # Content area (starts hidden because collapsed=True)
         self._content = QWidget()
+        self._content.setVisible(False)
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setContentsMargins(0, Space.SM, 0, 0)
         self._content_layout.setSpacing(Space.SM)
@@ -814,7 +826,7 @@ class CorrectionPanel(QWidget):
     #  Options Card
     # ────────────────────────────────────────────
     def _build_options_card(self):
-        card, layout = _card("보정 옵션")
+        card, layout = _card("보정 옵션", accent_color=Dark.SLATE)
 
         # Row 0: Tide model, output format
         row0 = QHBoxLayout()
@@ -1096,7 +1108,7 @@ class CorrectionPanel(QWidget):
     #  Log Card
     # ────────────────────────────────────────────
     def _build_log_card(self):
-        card, layout = _card("처리 로그")
+        card, layout = _card("처리 로그", accent_color=Dark.SLATE)
         self._log_viewer = LogViewer()
         self._log_viewer.setMinimumHeight(200)
         layout.addWidget(self._log_viewer, 1)
@@ -1260,6 +1272,7 @@ class CorrectionPanel(QWidget):
             "TID + CSV",
             "TID + Kingdom",
             "TID + SonarWiz",
+            "TID + Shapefile",
         ])
         self._output_format_combo.setFixedWidth(140)
         self._style_combo(self._output_format_combo)
@@ -1626,7 +1639,7 @@ class CorrectionPanel(QWidget):
         tide_model = model_map.get(self._tide_model_combo.currentIndex(), 'KHOA')
 
         # C3: Output format mapping
-        fmt_map = {0: 'TID', 1: 'TID + CSV', 2: 'TID + Kingdom', 3: 'TID + SonarWiz'}
+        fmt_map = {0: 'TID', 1: 'TID + CSV', 2: 'TID + Kingdom', 3: 'TID + SonarWiz', 4: 'TID + Shapefile'}
         output_format = fmt_map.get(self._output_format_combo.currentIndex(), 'TID')
 
         return {
@@ -1990,6 +2003,7 @@ class CorrectionPanel(QWidget):
             f"[배치 {idx + 1}/{total}] {s}"
         ))
         self._worker.finished.connect(self._on_batch_item_finished)
+        self._worker.station_select_needed.connect(self._on_station_select_needed)
 
         self._thread.start()
 
@@ -2068,11 +2082,14 @@ class CorrectionPanel(QWidget):
                 self._controller.toast_requested.emit(msg, "error")
         except Exception as e:
             import traceback
+            logger.error(f"_on_finished error: {e}")
             traceback.print_exc()
-            # Ensure UI is always unlocked even on error
+        finally:
+            # ALWAYS unlock UI even if exception occurred
+            self._is_running = False
+            self._set_inputs_locked(False)
             self._run_btn.setEnabled(True)
             self._stop_btn.setEnabled(False)
-        finally:
             # Wait for thread to fully stop before releasing references
             # to avoid "QThread: Destroyed while thread is still running"
             thread = self._thread

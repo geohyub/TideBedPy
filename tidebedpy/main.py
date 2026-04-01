@@ -93,6 +93,12 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='상세 출력 (-v: INFO, -vv: DEBUG)')
 
+    # 배치 모드
+    parser.add_argument('--batch', nargs='+', metavar='NAV_DIR',
+                        help='여러 Nav 폴더를 동일 설정으로 배치 처리')
+    parser.add_argument('--batch-output-dir',
+                        help='배치 모드 출력 디렉토리 (기본: 각 Nav 폴더 옆)')
+
     return parser
 
 
@@ -105,9 +111,80 @@ def progress_callback(current: int, total: int):
     print(f'\r  Processing: [{bar}] {pct:5.1f}% ({current}/{total})', end='', flush=True)
 
 
+def run_batch(args):
+    """여러 Nav 폴더를 동일 설정으로 배치 처리."""
+    setup_logging(args.verbose)
+    logger = logging.getLogger('tidebedpy')
+
+    nav_dirs = args.batch
+    out_dir = args.batch_output_dir
+
+    print(f"\n  TideBedPy Batch Mode — {len(nav_dirs)}개 Nav 폴더")
+    print("  " + "=" * 50)
+
+    results = []
+    total_start = time.time()
+
+    for i, nav_dir in enumerate(nav_dirs, 1):
+        if not os.path.isdir(nav_dir):
+            print(f"\n  [{i}/{len(nav_dirs)}] SKIP: 폴더 없음 — {nav_dir}")
+            results.append((nav_dir, False, "폴더 없음"))
+            continue
+
+        folder_name = os.path.basename(os.path.normpath(nav_dir))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+            output_path = os.path.join(out_dir, f"{folder_name}.tid")
+        else:
+            output_path = os.path.join(os.path.dirname(nav_dir), f"{folder_name}.tid")
+
+        print(f"\n  [{i}/{len(nav_dirs)}] {folder_name}")
+        print(f"    Nav: {nav_dir}")
+        print(f"    Out: {output_path}")
+
+        # 원래 args를 복제하여 단일 실행용으로 설정
+        import copy
+        single_args = copy.copy(args)
+        single_args.nav = nav_dir
+        single_args.output = output_path
+        single_args.batch = None  # 재귀 방지
+
+        try:
+            main_single(single_args)
+            results.append((nav_dir, True, "OK"))
+        except SystemExit:
+            results.append((nav_dir, False, "설정/데이터 오류"))
+        except Exception as e:
+            logger.error(f"배치 항목 실패: {e}")
+            results.append((nav_dir, False, str(e)))
+
+    total_elapsed = time.time() - total_start
+    print(f"\n  {'=' * 50}")
+    print(f"  배치 완료: {sum(1 for _, ok, _ in results if ok)}/{len(results)} 성공"
+          f"  ({total_elapsed:.1f}초)")
+    for nav_dir, ok, msg in results:
+        status = "OK" if ok else f"FAIL ({msg})"
+        print(f"    {os.path.basename(nav_dir)}: {status}")
+    print()
+
+
 def main():
     parser = create_parser()
     args = parser.parse_args()
+
+    # 배치 모드 분기
+    if args.batch:
+        run_batch(args)
+        return
+
+    main_single(args)
+
+
+def main_single(args=None):
+    """단일 프로젝트 보정 실행."""
+    if args is None:
+        parser = create_parser()
+        args = parser.parse_args()
 
     setup_logging(args.verbose)
     logger = logging.getLogger('tidebedpy')
@@ -220,7 +297,7 @@ def main():
     print()  # 진행률 바 줄바꿈
 
     # 에러 통계
-    error_count = sum(1 for nav in processed if nav.tc <= -999.0)
+    error_count = sum(1 for nav in processed if nav.tc <= -1.0)
     valid_count = len(processed) - error_count
     print(f"  {'':>4}Results: {valid_count} valid, {error_count} errors "
           f"(total {len(processed)} points)")
@@ -236,7 +313,7 @@ def main():
     # 에러 포인트 수집
     error_points = []
     for nav in processed:
-        if nav.tc <= -999.0:
+        if nav.tc <= -1.0:
             error_points.append({
                 'lon': nav.x,
                 'lat': nav.y,

@@ -81,6 +81,60 @@ def _stat_label(key: str, value: str) -> QHBoxLayout:
     return row
 
 
+class _CollapsibleGroup(QWidget):
+    """Lightweight collapsible section for grouping cards."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self._collapsed = False
+        main = QVBoxLayout(self)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+
+        # Header
+        hdr = QHBoxLayout()
+        hdr.setContentsMargins(0, Space.SM, 0, Space.SM)
+        bar = QFrame()
+        bar.setFixedSize(4, 14)
+        bar.setStyleSheet(f"background: {ACCENT}; border: none; border-radius: 2px;")
+        hdr.addWidget(bar)
+        lbl = QLabel(title)
+        lbl.setStyleSheet(
+            f"color: {Dark.TEXT_BRIGHT}; font-size: {Font.SM}px; "
+            f"font-weight: {Font.SEMIBOLD}; background: transparent; border: none;"
+        )
+        hdr.addWidget(lbl)
+        hdr.addStretch()
+        self._toggle = QPushButton("접기")
+        self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {Dark.MUTED}; "
+            f"font-size: {Font.XS}px; border: none; padding: 2px 8px; }} "
+            f"QPushButton:hover {{ color: {Dark.TEXT}; }}"
+        )
+        self._toggle.clicked.connect(self._on_toggle)
+        hdr.addWidget(self._toggle)
+        main.addLayout(hdr)
+
+        self._body = QWidget()
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(0, 0, 0, 0)
+        self._body_layout.setSpacing(Space.SM)
+        main.addWidget(self._body)
+
+    @property
+    def body_layout(self) -> QVBoxLayout:
+        return self._body_layout
+
+    def add_card(self, widget: QWidget):
+        self._body_layout.addWidget(widget)
+
+    def _on_toggle(self):
+        self._collapsed = not self._collapsed
+        self._body.setVisible(not self._collapsed)
+        self._toggle.setText("펼치기" if self._collapsed else "접기")
+
+
 class ComparePanel(QWidget):
     """Panel for comparing two TID files side by side."""
 
@@ -200,27 +254,41 @@ class ComparePanel(QWidget):
 
         self._layout.addWidget(self._empty_state)
 
+        # -- Section 1: Statistics --
+        self._stats_group = _CollapsibleGroup("통계")
+        self._stats_group.setVisible(False)
+
         self._context_card, self._context_lay = _card("실행 맥락")
         self._context_card.setVisible(False)
-        self._layout.addWidget(self._context_card)
+        self._stats_group.add_card(self._context_card)
 
-        # -- Statistics card (hidden initially) --
         self._stats_card, self._stats_lay = _card("통계")
         self._stats_card.setVisible(False)
-        self._layout.addWidget(self._stats_card)
+        self._stats_group.add_card(self._stats_card)
 
-        # -- Charts (hidden initially) --
+        self._layout.addWidget(self._stats_group)
+
+        # -- Section 2: Charts --
+        self._charts_group = _CollapsibleGroup("차트")
+        self._charts_group.setVisible(False)
+
         self._overlay_card, overlay_lay = _card("보정값 비교")
         self._overlay_chart = TideChart()
         overlay_lay.addWidget(self._overlay_chart)
         self._overlay_card.setVisible(False)
-        self._layout.addWidget(self._overlay_card)
+        self._charts_group.add_card(self._overlay_card)
 
         self._diff_card, diff_lay = _card("차이 시계열")
         self._diff_chart = TideChart()
         diff_lay.addWidget(self._diff_chart)
         self._diff_card.setVisible(False)
-        self._layout.addWidget(self._diff_card)
+        self._charts_group.add_card(self._diff_card)
+
+        self._layout.addWidget(self._charts_group)
+
+        # -- Section 3: Analysis --
+        self._analysis_group = _CollapsibleGroup("분석")
+        self._analysis_group.setVisible(False)
 
         self._mismatch_card, mismatch_lay = _card("주요 차이 시점")
         self._mismatch_body = QLabel()
@@ -238,7 +306,7 @@ class ComparePanel(QWidget):
         """)
         mismatch_lay.addWidget(self._mismatch_body)
         self._mismatch_card.setVisible(False)
-        self._layout.addWidget(self._mismatch_card)
+        self._analysis_group.add_card(self._mismatch_card)
 
         self._contributors_card, contributors_lay = _card("기준항 커버리지")
         self._contributors_body = QLabel()
@@ -256,7 +324,9 @@ class ComparePanel(QWidget):
         """)
         contributors_lay.addWidget(self._contributors_body)
         self._contributors_card.setVisible(False)
-        self._layout.addWidget(self._contributors_card)
+        self._analysis_group.add_card(self._contributors_card)
+
+        self._layout.addWidget(self._analysis_group)
 
         self._layout.addStretch()
 
@@ -338,8 +408,11 @@ class ComparePanel(QWidget):
         rms = math.sqrt(sum(d * d for d in diffs) / len(diffs))
         pct_within = (within / matched) * 100.0
 
-        # Hide empty state, show results
+        # Hide empty state, show result groups
         self._empty_state.setVisible(False)
+        self._stats_group.setVisible(True)
+        self._charts_group.setVisible(True)
+        self._analysis_group.setVisible(True)
         self._populate_context_card(path_a, path_b, summary_a, summary_b)
         self._populate_contributor_card(summary_a, summary_b)
 
@@ -649,6 +722,9 @@ class ComparePanel(QWidget):
     def _reset_result_view(self) -> None:
         """Hide stale comparison results before a new run."""
         self._empty_state.setVisible(True)
+        self._stats_group.setVisible(False)
+        self._charts_group.setVisible(False)
+        self._analysis_group.setVisible(False)
         self._context_card.setVisible(False)
         self._stats_card.setVisible(False)
         self._overlay_card.setVisible(False)

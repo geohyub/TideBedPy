@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QPushButton, QFileDialog, QScrollArea, QGridLayout,
 )
 
@@ -31,29 +31,49 @@ try:
     import pyqtgraph as pg
     import numpy as np
     HAS_PYQTGRAPH = True
-except ImportError:
+except ImportError as e:
+    logger.warning(f"Optional module unavailable: {e}")
     HAS_PYQTGRAPH = False
 
 try:
     from tidebedpy.desktop.widgets.tide_chart import TideChart
     HAS_TIDE_CHART = True
-except ImportError:
+except ImportError as e:
+    logger.warning(f"Optional module unavailable: {e}")
     HAS_TIDE_CHART = False
 
 try:
     from tidebedpy.desktop.widgets.weight_chart import WeightChart
     HAS_WEIGHT_CHART = True
-except ImportError:
+except ImportError as e:
+    logger.warning(f"Optional module unavailable: {e}")
     HAS_WEIGHT_CHART = False
 
 # Coastline reader
 try:
     from tidebedpy.output.map_view import _read_shp_polygons
     HAS_SHP_READER = True
-except ImportError:
+except ImportError as e:
+    logger.warning(f"Optional module unavailable: {e}")
     HAS_SHP_READER = False
 
-COASTLINE_PATH = r"C:\Users\JWONLINETEAM\Desktop\TideBed (2)\info\해안선\fareast_merge.shp"
+def _find_coastline_path():
+    """Search for fareast_merge.shp in common locations."""
+    candidates = [
+        # config-based
+        os.path.join(os.environ.get("TIDEBEDPY_DATA", ""), "해안선", "fareast_merge.shp"),
+        # relative to project
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "info", "해안선", "fareast_merge.shp"),
+        # legacy locations
+        r"C:\Users\JWONLINETEAM\Desktop\TideBed (2)\info\해안선\fareast_merge.shp",
+        r"C:\Users\JWONLINETEAM\Desktop\TideBed\info\해안선\fareast_merge.shp",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return ""
+
+COASTLINE_PATH = _find_coastline_path()
 
 
 # ── Color utilities ──────────────────────────────────────────
@@ -91,6 +111,7 @@ class ViewerPanel(QWidget):
         super().__init__(parent)
         self._controller = controller
         self._viz_data: Optional[Dict] = None
+        self._tab_empty_labels: Dict[int, QLabel] = {}
         self._build_ui()
 
     # ══════════════════════════════════════════════════════════
@@ -175,6 +196,7 @@ class ViewerPanel(QWidget):
         page1 = self._make_page()
         self._content = page1.layout()
         self._build_weight_chart_card()
+        self._add_tab_empty_label(page1, 1)
         self._pages.append(page1)
         self._stack.addWidget(page1)
 
@@ -182,6 +204,7 @@ class ViewerPanel(QWidget):
         page2 = self._make_page()
         self._content = page2.layout()
         self._build_map_card()
+        self._add_tab_empty_label(page2, 2, "항적 데이터가 로드되면 지도에 표시됩니다")
         self._pages.append(page2)
         self._stack.addWidget(page2)
 
@@ -189,6 +212,7 @@ class ViewerPanel(QWidget):
         page3 = self._make_page()
         self._content = page3.layout()
         self._build_histogram_card()
+        self._add_tab_empty_label(page3, 3)
         self._pages.append(page3)
         self._stack.addWidget(page3)
 
@@ -196,6 +220,7 @@ class ViewerPanel(QWidget):
         page4 = self._make_page()
         self._content = page4.layout()
         self._build_stats_card()
+        self._add_tab_empty_label(page4, 4)
         self._pages.append(page4)
         self._stack.addWidget(page4)
 
@@ -240,6 +265,24 @@ class ViewerPanel(QWidget):
         layout.setContentsMargins(Space.LG, Space.SM, Space.LG, Space.LG)
         layout.setSpacing(0)
         return page
+
+    def _add_tab_empty_label(self, page: QWidget, tab_idx: int, text: str = ""):
+        """Add a centered empty-state label to a tab page."""
+        msg = text or "보정 완료 후 자동으로 표시됩니다"
+        lbl = QLabel(msg)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet(
+            f"color: {Dark.MUTED}; font-size: {Font.SM}px; "
+            f"background: transparent; border: none; padding: 40px 0;"
+        )
+        page.layout().addWidget(lbl)
+        self._tab_empty_labels[tab_idx] = lbl
+
+    def _hide_tab_empty(self, tab_idx: int):
+        """Hide the per-tab empty label for the given index."""
+        lbl = self._tab_empty_labels.get(tab_idx)
+        if lbl:
+            lbl.setVisible(False)
 
     def _switch_tab(self, idx: int):
         """Switch to the tab at the given index."""
@@ -299,7 +342,7 @@ class ViewerPanel(QWidget):
         layout = QVBoxLayout(self._tide_card)
         layout.setContentsMargins(Space.SM, Space.SM, Space.SM, Space.SM)
         layout.setSpacing(0)
-        layout.addLayout(self._card_header("조석 보정값 시계열"))
+        layout.addLayout(self._card_header("조석 보정값 시계열", accent_color=Dark.SLATE))
 
         if HAS_TIDE_CHART:
             self._tide_chart = TideChart()
@@ -317,7 +360,7 @@ class ViewerPanel(QWidget):
         layout = QVBoxLayout(self._weight_card)
         layout.setContentsMargins(Space.SM, Space.SM, Space.SM, Space.SM)
         layout.setSpacing(0)
-        layout.addLayout(self._card_header("관측소 기여도"))
+        layout.addLayout(self._card_header("관측소 기여도", accent_color=Dark.SLATE))
 
         if HAS_WEIGHT_CHART:
             self._weight_chart = WeightChart()
@@ -335,7 +378,8 @@ class ViewerPanel(QWidget):
         layout = QVBoxLayout(self._map_card)
         layout.setContentsMargins(Space.SM, Space.SM, Space.SM, Space.SM)
         layout.setSpacing(0)
-        layout.addLayout(self._card_header("항적 지도"))
+        layout.addLayout(self._card_header("항적 지도", accent_color=Dark.SLATE))
+        self._map_header_lbl = self._last_header_label
 
         if HAS_PYQTGRAPH:
             pg.setConfigOptions(background='#0D1117')
@@ -371,7 +415,7 @@ class ViewerPanel(QWidget):
         layout = QVBoxLayout(self._hist_card)
         layout.setContentsMargins(Space.SM, Space.SM, Space.SM, Space.SM)
         layout.setSpacing(0)
-        layout.addLayout(self._card_header("분포 히스토그램"))
+        layout.addLayout(self._card_header("분포 히스토그램", accent_color=Dark.SLATE))
 
         if HAS_PYQTGRAPH:
             self._hist_widget = pg.PlotWidget()
@@ -401,7 +445,7 @@ class ViewerPanel(QWidget):
         layout = QVBoxLayout(self._stats_card)
         layout.setContentsMargins(Space.BASE, Space.SM, Space.BASE, Space.SM)
         layout.setSpacing(Space.SM)
-        layout.addLayout(self._card_header("통계 요약"))
+        layout.addLayout(self._card_header("통계 요약", accent_color=Dark.SLATE))
 
         self._summary_story = QLabel()
         self._summary_story.setWordWrap(True)
@@ -442,6 +486,8 @@ class ViewerPanel(QWidget):
         """
         self._viz_data = viz_data
         self._empty.setVisible(False)
+        for tab_idx in self._tab_empty_labels:
+            self._hide_tab_empty(tab_idx)
 
         processed = viz_data.get("processed", [])
         stations = viz_data.get("stations", [])
@@ -521,7 +567,8 @@ class ViewerPanel(QWidget):
         try:
             from tidebedpy.output.report import parse_tid_data_cm
             from tidebedpy.output.summary import load_summary_file
-        except ImportError:
+        except ImportError as e:
+            logger.warning(f"Optional module unavailable: {e}")
             from output.report import parse_tid_data_cm
             from output.summary import load_summary_file
 
@@ -550,6 +597,8 @@ class ViewerPanel(QWidget):
             return
 
         self._empty.setVisible(False)
+        for tab_idx in self._tab_empty_labels:
+            self._hide_tab_empty(tab_idx)
 
         # Use first series as primary
         name0, times0, values0 = all_series[0]
@@ -833,7 +882,12 @@ class ViewerPanel(QWidget):
         vb.enableAutoRange(enable=False)
 
         # ── Coastline polygons ──
+        if hasattr(self, '_map_header_lbl'):
+            self._map_header_lbl.setText("항적 지도 (로딩 중...)")
+            QApplication.processEvents()
         self._draw_coastline_on_map(plot_item, bbox)
+        if hasattr(self, '_map_header_lbl'):
+            self._map_header_lbl.setText("항적 지도")
 
         # ── Nav track scatter colored by Tc ──
         tc_min, tc_max = float(tc_arr.min()), float(tc_arr.max())
@@ -1276,13 +1330,23 @@ class ViewerPanel(QWidget):
         """)
         return card
 
-    def _card_header(self, title: str) -> QHBoxLayout:
+    def _card_header(self, title: str,
+                     accent_color: str = None) -> QHBoxLayout:
+        """Create a card header with accent bar and title label.
+
+        Args:
+            title: Header text.
+            accent_color: Bar color. Defaults to ACCENT for primary cards,
+                          pass Dark.SLATE for secondary cards.
+        """
+        if accent_color is None:
+            accent_color = ACCENT
         hdr = QHBoxLayout()
         hdr.setContentsMargins(0, 0, 0, 4)
         hdr.setSpacing(6)
         bar = QFrame()
         bar.setFixedSize(3, 14)
-        bar.setStyleSheet(f"background: {ACCENT}; border: none; border-radius: 1px;")
+        bar.setStyleSheet(f"background: {accent_color}; border: none; border-radius: 1px;")
         hdr.addWidget(bar)
         lbl = QLabel(title)
         lbl.setFixedHeight(16)
@@ -1295,6 +1359,7 @@ class ViewerPanel(QWidget):
         """)
         hdr.addWidget(lbl)
         hdr.addStretch()
+        self._last_header_label = lbl
         return hdr
 
     def _missing_label(self, pkg: str) -> QLabel:

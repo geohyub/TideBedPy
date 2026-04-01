@@ -32,8 +32,27 @@ def create_package(output_dir: str = None):
     print(f"  출력: {output_dir}")
     print()
 
-    # 출력 디렉토리 생성
+    # 출력 디렉토리 생성 (안전 검사 포함)
     if os.path.exists(output_dir):
+        # 보호: 시스템/사용자 데이터 경로 삭제 방지
+        real_path = os.path.realpath(output_dir)
+        _forbidden = [
+            os.path.expanduser("~"),
+            os.path.dirname(project_root),  # 소스 부모
+            project_root,                    # 소스 자체
+        ]
+        # 드라이브 루트 금지
+        if os.path.splitdrive(real_path)[1] in ('/', '\\', ''):
+            raise ValueError(f"드라이브 루트 삭제 금지: {real_path}")
+        for forbidden in _forbidden:
+            if os.path.realpath(forbidden) == real_path:
+                raise ValueError(f"보호된 경로 삭제 금지: {real_path}")
+        # 이름에 'TideBedPy' 포함 확인 (패키지 출력 폴더만 삭제)
+        basename = os.path.basename(real_path)
+        if 'TideBedPy' not in basename:
+            raise ValueError(
+                f"패키지 출력 폴더가 아닌 것 같습니다 (이름에 'TideBedPy' 미포함): {basename}"
+            )
         print(f"  [!] 기존 폴더 삭제: {output_dir}")
         shutil.rmtree(output_dir)
 

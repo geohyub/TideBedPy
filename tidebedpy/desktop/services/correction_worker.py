@@ -3,8 +3,11 @@
 import os
 import sys
 import time
+import logging
 import threading
 import traceback
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -166,10 +169,19 @@ class CorrectionWorker(QObject):
                             nearby, list(nav_points)
                         )
                         # Pause worker and wait for main thread response
-                        self._station_event.wait(timeout=600)
+                        got_event = self._station_event.wait(timeout=600)
                         chosen = self._selected_stations
                         if not chosen:
-                            self.log.emit("  관측소 선택 취소됨 — API 수집 생략", "warning")
+                            if not got_event:
+                                # Timeout: fall back to first 5 nearby stations
+                                chosen = nearby[:5] if nearby else []
+                                self._selected_stations = chosen
+                                self.log.emit(
+                                    f"  관측소 선택 시간 초과 — 가까운 {len(chosen)}개 자동 선택",
+                                    "warning",
+                                )
+                            else:
+                                self.log.emit("  관측소 선택 취소됨 — API 수집 생략", "warning")
                     if chosen:
                         self.log.emit(f"  \u2192 {len(chosen)}개 관측소 선택됨", "info")
 
@@ -223,7 +235,7 @@ class CorrectionWorker(QObject):
                         nav.tc = tc_cm
                     processed = list(nav_points)
                     all_corrections = [[] for _ in processed]
-                    error_count = sum(1 for nav in processed if nav.tc <= -999.0)
+                    error_count = sum(1 for nav in processed if nav.tc <= -1.0)
                     valid_count = len(processed) - error_count
                     self.log.emit(
                         f"  \u2192 정상: {valid_count:,}개  /  오류: {error_count:,}개  "
@@ -342,7 +354,7 @@ class CorrectionWorker(QObject):
                     return
 
             if not use_global_model:
-                error_count = sum(1 for nav in processed if nav.tc <= -999.0)
+                error_count = sum(1 for nav in processed if nav.tc <= -1.0)
                 valid_count = len(processed) - error_count
                 self.log.emit(
                     f"  \u2192 정상: {valid_count:,}개  /  오류: {error_count:,}개  "
@@ -398,12 +410,30 @@ class CorrectionWorker(QObject):
                         self.log.emit(
                             f"  \u2192 {os.path.basename(sw_path)}", "info"
                         )
+                    if 'Shapefile' in output_format:
+                        try:
+                            from tidebedpy.output.shp_writer import write_correction_shp
+                            shp_base = base_path.rsplit('.', 1)[0]
+                            shp_points = [
+                                (p.x, p.y, p.t.strftime('%Y-%m-%d %H:%M:%S'), p.tc)
+                                for p in processed if p.tc > -1.0
+                            ]
+                            shp_result = write_correction_shp(shp_base, shp_points)
+                            if shp_result:
+                                self.log.emit(
+                                    f"  \u2192 {os.path.basename(shp_result)}",
+                                    "info",
+                                )
+                        except Exception as shp_e:
+                            self.log.emit(
+                                f"  Shapefile 출력 실패: {shp_e}", "warning"
+                            )
                 except Exception as e:
                     self.log.emit(f"  추가 포맷 출력 실패: {e}", "warning")
 
             error_points = []
             for nav in processed:
-                if nav.tc <= -999.0:
+                if nav.tc <= -1.0:
                     error_points.append({
                         "lon": nav.x,
                         "lat": nav.y,
@@ -450,7 +480,8 @@ class CorrectionWorker(QObject):
                                 f"  \u2192 비교 그래프: {os.path.basename(cmp_path)}",
                                 "info",
                             )
-                except ImportError:
+                except ImportError as e:
+                    logger.warning(f"Optional module unavailable: {e}")
                     self.log.emit("  matplotlib 미설치 -- 그래프 생략", "warning")
                 except Exception as e:
                     self.log.emit(f"  그래프 생성 실패: {e}", "warning")
@@ -481,8 +512,8 @@ class CorrectionWorker(QObject):
                             f"  \u2192 보정 결과 지도: {os.path.basename(corr_img)}",
                             "info",
                         )
-                except ImportError:
-                    pass
+                except ImportError as e:
+                    logger.warning(f"Optional module unavailable: {e}")
                 except Exception as e:
                     self.log.emit(f"  지도 생성 실패: {e}", "warning")
 
@@ -612,7 +643,7 @@ class CorrectionWorker(QObject):
 
                 if all_corrections:
                     for idx, corr_list in enumerate(all_corrections):
-                        if processed[idx].tc <= -999.0:
+                        if processed[idx].tc <= -1.0:
                             confidence_per_point.append(0.0)
                             distances_to_nearest.append(999.0)
                             if not corr_list:
@@ -650,8 +681,10 @@ class CorrectionWorker(QObject):
                     if dt_sec > 3600:
                         data_gap_count += 1
 
+                # Filter out error points before sending to viewer
+                valid_processed = [p for p in processed if p.tc > -1.0]
                 viz_data = {
-                    "processed": [(p.x, p.y, p.t.isoformat(), p.tc) for p in processed],
+                    "processed": [(p.x, p.y, p.t.isoformat(), p.tc) for p in valid_processed],
                     "stations": used_stations,
                     "output_path": config.output_path,
                     "elapsed": elapsed,

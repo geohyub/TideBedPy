@@ -182,17 +182,26 @@ def _api_request(api_key: str, obs_code: str, req_date: str,
     }
     query = '&'.join(f'{k}={v}' for k, v in params.items())
     full_url = f'{_API_URL}?{query}'
-    try:
-        req = urllib.request.Request(full_url)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode('utf-8')
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        raise ConnectionError(f'API HTTP 오류 {e.code}: {e.reason}')
-    except urllib.error.URLError as e:
-        raise ConnectionError(f'API 연결 실패: {e.reason}')
-    except json.JSONDecodeError:
-        raise ValueError('API 응답 JSON 파싱 실패')
+    last_err = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(full_url)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode('utf-8')
+                return json.loads(raw)
+        except urllib.error.HTTPError as e:
+            last_err = ConnectionError(f'API HTTP 오류 {e.code}: {e.reason}')
+            if e.code < 500:
+                raise last_err  # client error, no retry
+        except urllib.error.URLError as e:
+            last_err = ConnectionError(f'API 연결 실패: {e.reason}')
+        except json.JSONDecodeError:
+            raise ValueError('API 응답 JSON 파싱 실패')
+        if attempt < 2:
+            backoff = 2 ** attempt  # 1s, 2s
+            logger.warning(f'API 재시도 {attempt + 1}/3 ({backoff}s 대기): {last_err}')
+            time.sleep(backoff)
+    raise last_err
 
 
 def fetch_tide_day(api_key: str, obs_code: str, date_str: str,
@@ -242,7 +251,8 @@ def fetch_tide_day(api_key: str, obs_code: str, date_str: str,
 def fetch_tide_range(api_key: str, obs_code: str,
                      start_date: str, end_date: str,
                      minute: int = 1,
-                     progress_callback=None) -> List[dict]:
+                     progress_callback=None,
+                     cache=None) -> List[dict]:
     """
     기간 조위 데이터 조회 (일별 반복).
 
@@ -251,6 +261,7 @@ def fetch_tide_range(api_key: str, obs_code: str,
     start_date, end_date : 'YYYYMMDD'
     minute : 시간 간격 (1=1분, 60=1시간)
     progress_callback : callable(current_day, total_days) or None
+    cache : TideCache instance or None (opt-in offline cache)
 
     Returns
     -------
@@ -262,6 +273,7 @@ def fetch_tide_range(api_key: str, obs_code: str,
 
     all_data = []
     fail_count = 0
+    cache_hit = 0
 
     for i in range(total_days):
         day = dt_start + timedelta(days=i)
@@ -270,6 +282,15 @@ def fetch_tide_range(api_key: str, obs_code: str,
         if progress_callback:
             progress_callback(i + 1, total_days)
 
+        # Cache lookup
+        if cache:
+            cached = cache.get(obs_code, day_str, interval_min=minute)
+            if cached:
+                logger.info(f"  Cache hit: {obs_code} {day_str}")
+                all_data.extend(cached)
+                cache_hit += 1
+                continue
+
         try:
             items = fetch_tide_day(api_key, obs_code, day_str, minute)
             if not items:
@@ -277,6 +298,9 @@ def fetch_tide_range(api_key: str, obs_code: str,
                 logger.warning(f"API 빈 응답 ({obs_code}, {day_str})")
             else:
                 all_data.extend(items)
+                # Cache store
+                if cache:
+                    cache.put(obs_code, day_str, items, interval_min=minute)
         except Exception as e:
             fail_count += 1
             logger.warning(f"API 조회 실패 ({obs_code}, {day_str}): {e}")
@@ -284,6 +308,8 @@ def fetch_tide_range(api_key: str, obs_code: str,
 
         time.sleep(0.2)  # API 부하 방지
 
+    if cache_hit > 0:
+        logger.info(f"API 캐시: {obs_code} - {cache_hit}/{total_days}일 캐시 사용")
     if fail_count > 0:
         logger.warning(f"API 수집 경고: {obs_code} - {total_days}일 중 {fail_count}일 실패")
 

@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QThread, Slot, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QFrame, QScrollArea, QListWidget, QListWidgetItem, QFileDialog,
-    QMessageBox, QProgressBar, QAbstractItemView,
+    QMessageBox, QProgressBar, QAbstractItemView, QCheckBox,
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "_shared"))
@@ -126,6 +126,7 @@ class ToolsPanel(QWidget):
         layout.setSpacing(Space.BASE)
 
         self._build_api_card(layout)
+        self._build_cache_card(layout)
         self._build_csv_card(layout)
         self._build_manual_card(layout)
 
@@ -382,6 +383,106 @@ class ToolsPanel(QWidget):
         layout.addWidget(hint)
 
         parent_layout.addWidget(card)
+
+    # ── Cache Card ──
+    def _build_cache_card(self, parent_layout):
+        card, layout = _card("API 캐시")
+
+        desc = QLabel("KHOA API 조위 데이터를 로컬에 캐시하여 재다운로드를 줄입니다.")
+        desc.setStyleSheet(f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent;")
+        layout.addWidget(desc)
+
+        # Cache enabled checkbox
+        self._cache_check = QCheckBox("API 캐시 사용")
+        self._cache_check.setChecked(True)
+        self._cache_check.setStyleSheet(f"""
+            QCheckBox {{
+                color: {Dark.TEXT};
+                font-size: {Font.SM}px;
+                background: transparent;
+                spacing: 6px;
+            }}
+            QCheckBox::indicator {{
+                width: 16px; height: 16px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: 3px;
+                background: {Dark.BG_ALT};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {ACCENT};
+                border-color: {ACCENT};
+            }}
+        """)
+        layout.addWidget(self._cache_check)
+
+        # Stats label
+        self._cache_stats_label = QLabel("")
+        self._cache_stats_label.setStyleSheet(
+            f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent;"
+        )
+        layout.addWidget(self._cache_stats_label)
+        self._refresh_cache_stats()
+
+        # Clear button
+        btn_row = QHBoxLayout()
+        clear_btn = QPushButton("캐시 비우기")
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {Dark.MUTED};
+                font-size: {Font.SM}px;
+                border: 1px solid {Dark.BORDER};
+                border-radius: 4px;
+                padding: 4px 12px;
+            }}
+            QPushButton:hover {{ color: {Dark.TEXT}; background: {Dark.SLATE}; }}
+        """)
+        clear_btn.clicked.connect(self._clear_cache)
+        btn_row.addWidget(clear_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        parent_layout.addWidget(card)
+
+    def _refresh_cache_stats(self):
+        """Update cache stats label."""
+        try:
+            from tidebedpy.data_io.tide_cache import TideCache
+            cache = TideCache()
+            stats = cache.stats()
+            cache.close()
+            total = stats.get("total_records", 0)
+            stations = stats.get("stations", 0)
+            self._cache_stats_label.setText(
+                f"{total}일치 데이터, {stations}개 관측소"
+            )
+        except Exception:
+            self._cache_stats_label.setText("캐시 정보 없음")
+
+    def _clear_cache(self):
+        """Clear all cached tide data."""
+        reply = QMessageBox.question(
+            self, "캐시 비우기",
+            "모든 캐시된 조위 데이터를 삭제하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from tidebedpy.data_io.tide_cache import TideCache
+            cache = TideCache()
+            cache.clear()
+            cache.close()
+            self._refresh_cache_stats()
+            self._controller.toast_requested.emit("캐시 비우기 완료", "success")
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"캐시 비우기 실패:\n{e}")
+
+    def is_cache_enabled(self) -> bool:
+        """Return whether API cache is enabled."""
+        return self._cache_check.isChecked()
 
     # ════════════════════════════════════════════
     #  API Download
