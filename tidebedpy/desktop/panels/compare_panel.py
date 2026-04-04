@@ -140,9 +140,10 @@ class ComparePanel(QWidget):
 
     panel_title = "결과 비교"
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, tr=None, parent=None):
         super().__init__(parent)
         self._controller = controller
+        self._t = tr or (lambda key, default=None, **kwargs: default or key)
         self._build_ui()
 
     def _build_ui(self):
@@ -174,18 +175,18 @@ class ComparePanel(QWidget):
         self._layout.setSpacing(Space.BASE)
 
         # -- Input card --
-        input_card, input_lay = _card("파일 선택")
+        input_card, input_lay = _card(self._t("compare_input", "파일 선택"))
 
-        self._path_a = PathRow("파일 A (.tid)", mode="file",
-                               file_filter="TID Files (*.tid);;All (*)")
+        self._path_a = PathRow(self._t("select_file_a", "파일 A (.tid)"), mode="file",
+                               file_filter="TID Files (*.tid);;All (*)", tr=self._t)
         input_lay.addWidget(self._path_a)
 
         hint_a = QLabel("  비교 대상 A: 보정 결과 TID 파일")
         hint_a.setStyleSheet(f"color: {Dark.DIM}; font-size: {Font.XS}px; background: transparent; border: none;")
         input_lay.addWidget(hint_a)
 
-        self._path_b = PathRow("파일 B (.tid)", mode="file",
-                               file_filter="TID Files (*.tid);;All (*)")
+        self._path_b = PathRow(self._t("select_file_b", "파일 B (.tid)"), mode="file",
+                               file_filter="TID Files (*.tid);;All (*)", tr=self._t)
         input_lay.addWidget(self._path_b)
 
         hint_b = QLabel("  비교 대상 B: 참조 TID 파일 또는 다른 보정 결과")
@@ -194,7 +195,7 @@ class ComparePanel(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self._compare_btn = QPushButton("비교")
+        self._compare_btn = QPushButton(self._t("compare_files", "비교"))
         self._compare_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._compare_btn.setFixedWidth(120)
         self._compare_btn.setStyleSheet(f"""
@@ -241,7 +242,7 @@ class ComparePanel(QWidget):
         """)
         empty_lay.addWidget(empty_icon)
 
-        empty_text = QLabel("두 개의 TID 파일을 선택하고 '비교'를 누르세요")
+        empty_text = QLabel(self._t("compare_empty", "두 개의 TID 파일을 선택하고 '비교'를 누르세요"))
         empty_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_text.setStyleSheet(f"""
             color: {Dark.MUTED};
@@ -255,21 +256,21 @@ class ComparePanel(QWidget):
         self._layout.addWidget(self._empty_state)
 
         # -- Section 1: Statistics --
-        self._stats_group = _CollapsibleGroup("통계")
+        self._stats_group = _CollapsibleGroup(self._t("comparison_stats", "통계"))
         self._stats_group.setVisible(False)
 
-        self._context_card, self._context_lay = _card("실행 맥락")
+        self._context_card, self._context_lay = _card(self._t("comparison_context", "실행 맥락"))
         self._context_card.setVisible(False)
         self._stats_group.add_card(self._context_card)
 
-        self._stats_card, self._stats_lay = _card("통계")
+        self._stats_card, self._stats_lay = _card(self._t("comparison_stats", "통계"))
         self._stats_card.setVisible(False)
         self._stats_group.add_card(self._stats_card)
 
         self._layout.addWidget(self._stats_group)
 
         # -- Section 2: Charts --
-        self._charts_group = _CollapsibleGroup("차트")
+        self._charts_group = _CollapsibleGroup(self._t("comparison_charts", "차트"))
         self._charts_group.setVisible(False)
 
         self._overlay_card, overlay_lay = _card("보정값 비교")
@@ -287,7 +288,7 @@ class ComparePanel(QWidget):
         self._layout.addWidget(self._charts_group)
 
         # -- Section 3: Analysis --
-        self._analysis_group = _CollapsibleGroup("분석")
+        self._analysis_group = _CollapsibleGroup(self._t("comparison_analysis", "분석"))
         self._analysis_group.setVisible(False)
 
         self._mismatch_card, mismatch_lay = _card("주요 차이 시점")

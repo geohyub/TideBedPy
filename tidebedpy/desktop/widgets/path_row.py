@@ -55,12 +55,16 @@ class PathRow(QWidget):
         hint: str = "",
         mode: str = "folder",        # "folder", "file", "save"
         file_filter: str = "",       # e.g. "TID (*.tid);;All (*.*)"
+        tr=None,
         parent=None,
     ):
         super().__init__(parent)
         self._mode = mode
         self._file_filter = file_filter
         self._auto_discovered = False
+        self._tr = tr or (lambda key, default=None, **kwargs: default or key)
+        self._label_text = label
+        self._hint_text = hint
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -72,7 +76,8 @@ class PathRow(QWidget):
         row.setSpacing(Space.SM)
 
         # Label
-        lbl = QLabel(label)
+        self._label = QLabel(label)
+        lbl = self._label
         lbl.setFixedWidth(110)
         lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         lbl.setStyleSheet(f"""
@@ -84,7 +89,7 @@ class PathRow(QWidget):
         row.addWidget(lbl)
 
         # Auto-discover badge (hidden by default)
-        self._badge = QLabel("AUTO")
+        self._badge = QLabel(self._tr("auto", "AUTO"))
         self._badge.setFixedSize(40, 18)
         self._badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._badge.setStyleSheet(f"""
@@ -100,7 +105,7 @@ class PathRow(QWidget):
 
         # Line edit
         self._edit = _DropLineEdit()
-        self._edit.setPlaceholderText(hint or f"{label} 경로를 입력하거나 탐색하세요")
+        self._edit.setPlaceholderText(hint or self._tr("path_placeholder", f"{label} 경로를 입력하거나 탐색하세요"))
         self._edit.setStyleSheet(f"""
             QLineEdit {{
                 background: {Dark.BG_ALT};
@@ -119,7 +124,8 @@ class PathRow(QWidget):
         row.addWidget(self._edit, 1)
 
         # Browse button
-        browse_btn = QPushButton("탐색")
+        self._browse_btn = QPushButton(self._tr("browse", "탐색"))
+        browse_btn = self._browse_btn
         browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         browse_btn.setFixedWidth(54)
         browse_btn.setStyleSheet(f"""
@@ -144,7 +150,8 @@ class PathRow(QWidget):
 
         # Hint row (optional)
         if hint:
-            hint_lbl = QLabel(hint)
+            self._hint_lbl = QLabel(hint)
+            hint_lbl = self._hint_lbl
             hint_lbl.setStyleSheet(f"""
                 color: {Dark.DIM};
                 font-size: {Font.XS}px;
@@ -171,18 +178,33 @@ class PathRow(QWidget):
         for child in self.findChildren(QPushButton):
             child.setEnabled(enabled)
 
+    def retranslate(self, label: str | None = None, hint: str | None = None):
+        if label is not None:
+            self._label_text = label
+        if hint is not None:
+            self._hint_text = hint
+        if hasattr(self, "_label"):
+            self._label.setText(self._label_text)
+        if hasattr(self, "_browse_btn"):
+            self._browse_btn.setText(self._tr("browse", "탐색"))
+        if hasattr(self, "_hint_lbl"):
+            self._hint_lbl.setText(self._hint_text)
+        if hasattr(self, "_edit"):
+            placeholder = self._hint_text or self._tr("path_placeholder", f"{self._label_text} 경로를 입력하거나 탐색하세요")
+            self._edit.setPlaceholderText(placeholder)
+
     # ── Private ──
 
     def _browse(self):
         if self._mode == "folder":
-            path = QFileDialog.getExistingDirectory(self, "폴더 선택", self.text())
+            path = QFileDialog.getExistingDirectory(self, self._tr("folder_select", "폴더 선택"), self.text())
         elif self._mode == "save":
             path, _ = QFileDialog.getSaveFileName(
-                self, "저장 경로", self.text(), self._file_filter
+                self, self._tr("save_path", "저장 경로"), self.text(), self._file_filter
             )
         else:
             path, _ = QFileDialog.getOpenFileName(
-                self, "파일 선택", self.text(), self._file_filter
+                self, self._tr("file_select", "파일 선택"), self.text(), self._file_filter
             )
         if path:
             self._edit.setText(path)

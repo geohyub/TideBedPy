@@ -13,6 +13,7 @@ from PySide6.QtGui import QShortcut, QKeySequence
 from geoview_pyside6 import GeoViewApp, Category
 
 from tidebedpy.desktop.app_controller import AppController
+from tidebedpy.desktop.i18n import TRANSLATIONS
 from tidebedpy.desktop.widgets.toast import ToastManager
 from tidebedpy.desktop.panels.correction_panel import CorrectionPanel
 
@@ -37,30 +38,32 @@ class TideBedApp(GeoViewApp):
 
     def setup_panels(self):
         # Main correction panel
-        self._correction = CorrectionPanel(self.controller)
-        self.add_panel("correction", "\u25A0", "조석보정", self._correction)
+        self.register_translations(TRANSLATIONS)
+
+        self._correction = CorrectionPanel(self.controller, tr=self.t)
+        self.add_panel("correction", "\u25A0", self.t("correction"), self._correction)
 
         # Tools panel (lazy import to avoid circular)
         try:
             from tidebedpy.desktop.panels.tools_panel import ToolsPanel
-            self._tools = ToolsPanel(self.controller)
-            self.add_panel("tools", "\u25C6", "도구", self._tools)
+            self._tools = ToolsPanel(self.controller, tr=self.t)
+            self.add_panel("tools", "\u25C6", self.t("tools"), self._tools)
         except ImportError:
             pass
 
         # Compare panel
         try:
             from tidebedpy.desktop.panels.compare_panel import ComparePanel
-            self._compare = ComparePanel(self.controller)
-            self.add_panel("compare", "\u25C7", "비교", self._compare)
+            self._compare = ComparePanel(self.controller, tr=self.t)
+            self.add_panel("compare", "\u25C7", self.t("compare"), self._compare)
         except ImportError:
             pass
 
         # Viewer panel
         try:
             from tidebedpy.desktop.panels.viewer_panel import ViewerPanel
-            self._viewer = ViewerPanel(self.controller)
-            self.add_panel("viewer", "\u25B3", "시각화", self._viewer)
+            self._viewer = ViewerPanel(self.controller, tr=self.t)
+            self.add_panel("viewer", "\u25B3", self.t("viewer"), self._viewer)
         except ImportError:
             pass
 
@@ -90,11 +93,33 @@ class TideBedApp(GeoViewApp):
         parts = []
         if ctx.timezone_offset != 0:
             sign = "+" if ctx.timezone_offset >= 0 else ""
-            parts.append(f"TZ: UTC{sign}{ctx.timezone_offset}")
+            parts.append(f"시간대: UTC{sign}{ctx.timezone_offset}")
         if ctx.survey_area:
-            parts.append(f"Area: {ctx.survey_area}")
+            parts.append(f"조사 구역: {ctx.survey_area}")
         if parts:
             self.status_bar.showMessage(" | ".join(parts), 5000)
+
+    def on_language_changed(self, lang, force=False):
+        self.sidebar.set_static_text(
+            nav_header=self.t("correction"),
+            status_text=self.t("ready", "Ready"),
+            separators=[],
+        )
+        titles = [
+            self.t("correction"),
+            self.t("tools"),
+            self.t("compare"),
+            self.t("viewer"),
+        ]
+        for idx, title in enumerate(titles):
+            if idx < len(self.sidebar.buttons):
+                self.sidebar.buttons[idx].setText(title)
+        for panel in (getattr(self, "_correction", None), getattr(self, "_tools", None),
+                      getattr(self, "_compare", None), getattr(self, "_viewer", None)):
+            if hasattr(panel, "retranslate"):
+                panel.retranslate()
+        if self._current_panel:
+            self._switch_panel(self._current_panel)
 
 
 def main():

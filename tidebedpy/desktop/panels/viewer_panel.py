@@ -107,9 +107,10 @@ def _make_colormap_lut(n: int = 256) -> "np.ndarray":
 class ViewerPanel(QWidget):
     """Interactive viewer for TID correction result files."""
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, tr=None, parent=None):
         super().__init__(parent)
         self._controller = controller
+        self._t = tr or (lambda key, default=None, **kwargs: default or key)
         self._viz_data: Optional[Dict] = None
         self._tab_empty_labels: Dict[int, QLabel] = {}
         self._build_ui()
@@ -126,7 +127,7 @@ class ViewerPanel(QWidget):
         outer.setSpacing(0)
 
         # Title
-        title = QLabel("결과 뷰어")
+        title = QLabel(self._t("viewer_title", "결과 뷰어"))
         title.setStyleSheet(f"""
             color: {Dark.TEXT_BRIGHT};
             font-size: {Font.LG}px;
@@ -141,7 +142,14 @@ class ViewerPanel(QWidget):
         self._tab_bar.setContentsMargins(Space.LG, 0, Space.LG, 0)
         self._tab_bar.setSpacing(4)
         self._tab_buttons: List[QPushButton] = []
-        tab_names = ["시계열", "기여도", "항적 지도", "분포", "통계", "파일 로드"]
+        tab_names = [
+            self._t("time_series", "시계열"),
+            self._t("contribution", "기여도"),
+            self._t("track_map", "항적 지도"),
+            self._t("distribution", "분포"),
+            self._t("statistics", "통계"),
+            self._t("file_load", "파일 로드"),
+        ]
         for i, name in enumerate(tab_names):
             btn = QPushButton(name)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -248,7 +256,7 @@ class ViewerPanel(QWidget):
             f"color: {Dark.DIM}; font-size: 28px; background: transparent; border: none;"
         )
         empty_layout.addWidget(icon_lbl)
-        hint_lbl = QLabel("TID 파일을 불러오거나 보정을 실행하면 결과가 표시됩니다")
+        hint_lbl = QLabel(self._t("viewer_empty", "TID 파일을 불러오거나 보정을 실행하면 결과가 표시됩니다"))
         hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint_lbl.setStyleSheet(
             f"color: {Dark.MUTED}; font-size: {Font.SM}px; background: transparent; border: none;"
@@ -303,7 +311,7 @@ class ViewerPanel(QWidget):
         for i in range(3):
             row = PathRow(
                 f"파일 {i + 1}",
-                hint="TID 파일 경로를 입력하거나 탐색하세요",
+                hint=self._t("viewer_file_hint", "TID 파일 경로를 입력하거나 탐색하세요"),
                 mode="file",
                 file_filter="TID (*.tid);;All (*.*)",
             )
@@ -312,7 +320,7 @@ class ViewerPanel(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self._load_btn = QPushButton("불러오기")
+        self._load_btn = QPushButton(self._t("load", "불러오기"))
         self._load_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._load_btn.setFixedWidth(120)
         self._load_btn.setStyleSheet(f"""

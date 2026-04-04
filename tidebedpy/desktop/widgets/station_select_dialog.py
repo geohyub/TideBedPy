@@ -18,7 +18,7 @@ ACCENT = "#F59E0B"
 class StationSelectDialog(QDialog):
     """Modal dialog for selecting nearby tide stations before API fetch."""
 
-    def __init__(self, nearby_stations, nav_points=None, parent=None):
+    def __init__(self, nearby_stations, nav_points=None, tr=None, parent=None):
         """
         Args:
             nearby_stations: list of (code, name, distance_km)
@@ -29,8 +29,9 @@ class StationSelectDialog(QDialog):
         self._nav = nav_points or []
         self._check_vars: list[QCheckBox] = []
         self.result = None  # None = cancelled, list = selected stations
+        self._t = tr or (lambda key, default=None, **kwargs: default or key)
 
-        self.setWindowTitle("API 관측소 선택")
+        self.setWindowTitle(self._t("api_station_select", "API 관측소 선택"))
         self.setMinimumSize(500, 500)
         self.resize(600, 550)
         self.setStyleSheet(f"""
@@ -47,7 +48,7 @@ class StationSelectDialog(QDialog):
         layout.setSpacing(Space.MD)
 
         # Title
-        title = QLabel("관측소 선택")
+        title = QLabel(self._t("station_select_title", "관측소 선택"))
         title.setStyleSheet(f"""
             color: {Dark.TEXT_BRIGHT};
             font-size: {Font.LG}px;
@@ -56,7 +57,7 @@ class StationSelectDialog(QDialog):
         """)
         layout.addWidget(title)
 
-        desc = QLabel("체크된 관측소에서 조위를 수집합니다. 100km 이내는 자동 선택됩니다.")
+        desc = QLabel(self._t("station_select_desc", "체크된 관측소에서 조위를 수집합니다. 100km 이내는 자동 선택됩니다."))
         desc.setStyleSheet(f"""
             color: {Dark.MUTED};
             font-size: {Font.XS}px;
@@ -67,8 +68,8 @@ class StationSelectDialog(QDialog):
         # Select all / none
         btn_row = QHBoxLayout()
         for text, callback in [
-            ("전체 선택", lambda: self._set_all(True)),
-            ("전체 해제", lambda: self._set_all(False)),
+            (self._t("select_all", "전체 선택"), lambda: self._set_all(True)),
+            (self._t("select_none", "전체 해제"), lambda: self._set_all(False)),
         ]:
             btn = QPushButton(text)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -159,7 +160,7 @@ class StationSelectDialog(QDialog):
         btn_frame = QHBoxLayout()
         btn_frame.setSpacing(Space.SM)
 
-        ok_btn = QPushButton("  수집 시작  ")
+        ok_btn = QPushButton(f"  {self._t('start_collection', '수집 시작')}  ")
         ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         ok_btn.setStyleSheet(f"""
             QPushButton {{
@@ -176,7 +177,7 @@ class StationSelectDialog(QDialog):
         ok_btn.clicked.connect(self._on_ok)
         btn_frame.addWidget(ok_btn)
 
-        cancel_btn = QPushButton("  취소  ")
+        cancel_btn = QPushButton(f"  {self._t('cancel', '취소')}  ")
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.setStyleSheet(f"""
             QPushButton {{
@@ -213,7 +214,11 @@ class StationSelectDialog(QDialog):
             if cb.isChecked()
         ]
         if not selected:
-            QMessageBox.warning(self, "선택 없음", "최소 1개 관측소를 선택하세요.")
+            QMessageBox.warning(
+                self,
+                self._t("none_selected_title", "선택 없음"),
+                self._t("none_selected", "최소 1개 관측소를 선택하세요."),
+            )
             return
         self.result = selected
         self.accept()
@@ -221,7 +226,7 @@ class StationSelectDialog(QDialog):
     @staticmethod
     def get_selection(nearby_stations, nav_points=None, parent=None):
         """Show dialog and return selected stations or None if cancelled."""
-        dlg = StationSelectDialog(nearby_stations, nav_points, parent)
+        dlg = StationSelectDialog(nearby_stations, nav_points, parent=parent)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             return dlg.result
         return None

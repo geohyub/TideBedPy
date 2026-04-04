@@ -96,9 +96,10 @@ class ToolsPanel(QWidget):
 
     panel_title = "도구"
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, tr=None, parent=None):
         super().__init__(parent)
         self._controller = controller
+        self._t = tr or (lambda key, default=None, **kwargs: default or key)
         self._build_ui()
 
     def _build_ui(self):
@@ -136,7 +137,7 @@ class ToolsPanel(QWidget):
 
     # ── API Download Card ──
     def _build_api_card(self, parent_layout):
-        card, layout = _card("조위 API 다운로드 (공공데이터포털)")
+        card, layout = _card(self._t("api_download_title", "조위 API 다운로드 (공공데이터포털)"))
 
         input_style = f"""
             QLineEdit {{
@@ -152,21 +153,21 @@ class ToolsPanel(QWidget):
 
         # API key
         row1 = QHBoxLayout()
-        lbl = QLabel("API 서비스키")
+        lbl = QLabel(self._t("api_key", "API 서비스키"))
         lbl.setFixedWidth(100)
         lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         lbl.setStyleSheet(f"color: {Dark.TEXT}; font-size: {Font.SM}px; font-weight: {Font.MEDIUM}; background: transparent;")
         row1.addWidget(lbl)
         self._api_key_input = QLineEdit()
         self._api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key_input.setPlaceholderText("공공데이터포털 인증키")
+        self._api_key_input.setPlaceholderText(self._t("public_api_key", "공공데이터포털 인증키"))
         self._api_key_input.setStyleSheet(input_style)
         row1.addWidget(self._api_key_input, 1)
         layout.addLayout(row1)
 
         # Date range
         row2 = QHBoxLayout()
-        lbl2 = QLabel("기간")
+        lbl2 = QLabel(self._t("period", "기간"))
         lbl2.setFixedWidth(100)
         lbl2.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         lbl2.setStyleSheet(f"color: {Dark.TEXT}; font-size: {Font.SM}px; font-weight: {Font.MEDIUM}; background: transparent;")
@@ -187,14 +188,14 @@ class ToolsPanel(QWidget):
         self._end_date.setStyleSheet(input_style)
         row2.addWidget(self._end_date)
 
-        hint = QLabel("(YYYYMMDD)")
+        hint = QLabel(self._t("date_hint", "(YYYYMMDD)"))
         hint.setStyleSheet(f"color: {Dark.DIM}; font-size: {Font.XS}px; background: transparent;")
         row2.addWidget(hint)
         row2.addStretch()
         layout.addLayout(row2)
 
         # Station list
-        lbl3 = QLabel("관측소 (Ctrl+클릭 다중선택)")
+        lbl3 = QLabel(self._t("stations", "관측소 (Ctrl+클릭 다중선택)"))
         lbl3.setStyleSheet(f"color: {Dark.TEXT}; font-size: {Font.SM}px; font-weight: {Font.MEDIUM}; background: transparent;")
         layout.addWidget(lbl3)
 
@@ -255,7 +256,7 @@ class ToolsPanel(QWidget):
         layout.addLayout(sel_row)
 
         # Status + progress
-        self._api_status = QLabel("대기 중")
+        self._api_status = QLabel(self._t("idle", "대기 중"))
         self._api_status.setStyleSheet(f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent;")
         layout.addWidget(self._api_status)
 
@@ -278,7 +279,7 @@ class ToolsPanel(QWidget):
 
         # Download button
         btn_row = QHBoxLayout()
-        self._download_btn = QPushButton("  다운로드 시작  ")
+        self._download_btn = QPushButton(f"  {self._t('download_start', '다운로드 시작')}  ")
         self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._download_btn.setStyleSheet(f"""
             QPushButton {{
@@ -302,15 +303,15 @@ class ToolsPanel(QWidget):
 
     # ── CSV→TOPS Card ──
     def _build_csv_card(self, parent_layout):
-        card, layout = _card("CSV \u2192 TOPS 변환")
+        card, layout = _card(self._t("csv_to_tops", "CSV → TOPS 변환"))
 
-        desc = QLabel("KHOA 바다누리 CSV 파일을 TOPS 형식으로 변환합니다.")
+        desc = QLabel(self._t("csv_to_tops_desc", "KHOA 바다누리 CSV 파일을 TOPS 형식으로 변환합니다."))
         desc.setStyleSheet(f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent;")
         layout.addWidget(desc)
 
         btn_row = QHBoxLayout()
 
-        btn_folder = QPushButton("폴더 변환")
+        btn_folder = QPushButton(self._t("folder_convert", "폴더 변환"))
         btn_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_folder.setStyleSheet(f"""
             QPushButton {{
@@ -327,7 +328,7 @@ class ToolsPanel(QWidget):
         btn_folder.clicked.connect(lambda: self._convert_csv(folder_mode=True))
         btn_row.addWidget(btn_folder)
 
-        btn_files = QPushButton("파일 선택 변환")
+        btn_files = QPushButton(self._t("file_convert", "파일 선택 변환"))
         btn_files.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_files.setStyleSheet(f"""
             QPushButton {{
@@ -349,10 +350,10 @@ class ToolsPanel(QWidget):
 
     # ── Manual Card ──
     def _build_manual_card(self, parent_layout):
-        card, layout = _card("매뉴얼")
+        card, layout = _card(self._t("manual", "매뉴얼"))
 
         btn_row = QHBoxLayout()
-        btn = QPushButton("매뉴얼 열기")
+        btn = QPushButton(self._t("manual_open", "매뉴얼 열기"))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(f"""
             QPushButton {{
@@ -371,7 +372,7 @@ class ToolsPanel(QWidget):
         layout.addLayout(btn_row)
 
         # Shortcut hints
-        hint = QLabel("Ctrl+R  보정 수행   |   Ctrl+S  세팅 저장   |   Esc  중지")
+        hint = QLabel(self._t("shortcut_hint", "Ctrl+R  보정 수행   |   Ctrl+S  세팅 저장   |   Esc  중지"))
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet(f"""
             color: {Dark.DIM};
@@ -386,14 +387,14 @@ class ToolsPanel(QWidget):
 
     # ── Cache Card ──
     def _build_cache_card(self, parent_layout):
-        card, layout = _card("API 캐시")
+        card, layout = _card(self._t("api_cache_title", "API 캐시"))
 
-        desc = QLabel("KHOA API 조위 데이터를 로컬에 캐시하여 재다운로드를 줄입니다.")
+        desc = QLabel(self._t("api_cache_desc", "KHOA API 조위 데이터를 로컬에 캐시하여 재다운로드를 줄입니다."))
         desc.setStyleSheet(f"color: {Dark.MUTED}; font-size: {Font.XS}px; background: transparent;")
         layout.addWidget(desc)
 
         # Cache enabled checkbox
-        self._cache_check = QCheckBox("API 캐시 사용")
+        self._cache_check = QCheckBox(self._t("api_cache", "API 캐시 사용"))
         self._cache_check.setChecked(True)
         self._cache_check.setStyleSheet(f"""
             QCheckBox {{
@@ -425,7 +426,7 @@ class ToolsPanel(QWidget):
 
         # Clear button
         btn_row = QHBoxLayout()
-        clear_btn = QPushButton("캐시 비우기")
+        clear_btn = QPushButton(self._t("clear_cache", "캐시 비우기"))
         clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_btn.setStyleSheet(f"""
             QPushButton {{

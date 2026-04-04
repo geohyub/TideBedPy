@@ -50,7 +50,7 @@ TIMEZONE_OPTIONS = [
 ]
 
 
-def _card(title: str = "", accent_color: str = None) -> tuple[QFrame, QVBoxLayout]:
+def _card(title: str = "", accent_color: str = None) -> tuple[QFrame, QVBoxLayout, QLabel | None]:
     """Create a dark-theme card frame with optional title.
 
     Args:
@@ -73,25 +73,26 @@ def _card(title: str = "", accent_color: str = None) -> tuple[QFrame, QVBoxLayou
     layout.setContentsMargins(Space.BASE, Space.MD, Space.BASE, Space.MD)
     layout.setSpacing(Space.SM)
 
+    title_lbl = None
     if title:
         hdr = QHBoxLayout()
         bar = QFrame()
         bar.setFixedSize(4, 16)
         bar.setStyleSheet(f"background: {accent_color}; border: none; border-radius: 2px;")
         hdr.addWidget(bar)
-        lbl = QLabel(title)
-        lbl.setStyleSheet(f"""
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet(f"""
             color: {Dark.TEXT_BRIGHT};
             font-size: {Font.SM}px;
             font-weight: {Font.SEMIBOLD};
             background: transparent;
             border: none;
         """)
-        hdr.addWidget(lbl)
+        hdr.addWidget(title_lbl)
         hdr.addStretch()
         layout.addLayout(hdr)
 
-    return card, layout
+    return card, layout, title_lbl
 
 
 def _sep() -> QFrame:
@@ -105,9 +106,11 @@ def _sep() -> QFrame:
 class CollapsibleSection(QWidget):
     """Collapsible card with toggle button."""
 
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title: str, parent=None, tr=None):
         super().__init__(parent)
         self._collapsed = True
+        self._title_text = title
+        self._tr = tr or (lambda key, default=None, **kwargs: default or key)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -122,7 +125,8 @@ class CollapsibleSection(QWidget):
         bar.setStyleSheet(f"background: {ACCENT}; border: none; border-radius: 2px;")
         header.addWidget(bar)
 
-        lbl = QLabel(title)
+        self._title_lbl = QLabel(title)
+        lbl = self._title_lbl
         lbl.setStyleSheet(f"""
             color: {Dark.TEXT_BRIGHT};
             font-size: {Font.SM}px;
@@ -179,7 +183,7 @@ class CollapsibleSection(QWidget):
     def set_collapsed(self, collapsed: bool):
         self._collapsed = collapsed
         self._content.setVisible(not collapsed)
-        self._toggle_btn.setText("펼치기" if collapsed else "접기")
+        self._toggle_btn.setText(self._tr("expand", "펼치기") if collapsed else self._tr("collapse", "접기"))
 
     def set_auto_discovered(self, discovered: bool):
         self._auto_badge.setVisible(discovered)
@@ -188,6 +192,14 @@ class CollapsibleSection(QWidget):
 
     def _toggle(self):
         self.set_collapsed(not self._collapsed)
+
+    def retranslate(self, title: str | None = None):
+        if title is not None:
+            self._title_text = title
+        if hasattr(self, "_title_lbl"):
+            self._title_lbl.setText(self._title_text)
+        if hasattr(self, "_toggle_btn"):
+            self._toggle_btn.setText(self._tr("expand", "펼치기") if self._collapsed else self._tr("collapse", "접기"))
 
 
 class _NavPreviewWorker(QThread):
@@ -323,15 +335,16 @@ class _NavPreviewWorker(QThread):
 class CorrectionPanel(QWidget):
     """Main tidal correction workflow panel."""
 
-    panel_title = "조석보정"
+    panel_title = "조석 보정"
 
     # Config file for recent paths
     _CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".tidebedpy")
     _CONFIG_FILE = os.path.join(_CONFIG_DIR, "recent.json")
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, tr=None, parent=None):
         super().__init__(parent)
         self._controller = controller
+        self._t = tr or (lambda key, default=None, **kwargs: default or key)
         self._worker = None
         self._thread = None
         self._is_running = False
@@ -584,12 +597,13 @@ class CorrectionPanel(QWidget):
     #  Input Card
     # ────────────────────────────────────────────
     def _build_input_card(self):
-        card, layout = _card("입력 파일 설정")
+        card, layout, title_lbl = _card(self._t("input_settings", "입력 파일 설정"))
+        self._input_title_lbl = title_lbl
 
         # Batch mode toggle (A2)
         batch_row = QHBoxLayout()
         batch_row.setContentsMargins(0, 0, 0, 0)
-        self._batch_mode = QCheckBox("배치 모드 (다중 폴더 처리)")
+        self._batch_mode = QCheckBox(self._t("batch_mode", "배치 모드 (다중 폴더 처리)"))
         self._batch_mode.setStyleSheet(f"""
             QCheckBox {{
                 color: {Dark.MUTED};
@@ -614,7 +628,12 @@ class CorrectionPanel(QWidget):
         layout.addLayout(batch_row)
 
         # Single nav row (default)
-        self._nav_row = PathRow("항적 폴더", "Nav 데이터 폴더 (Before/After 모두 지원)", mode="folder")
+        self._nav_row = PathRow(
+            self._t("nav_folder", "항적 폴더"),
+            self._t("nav_folder_hint", "Nav 데이터 폴더 (Before/After 모두 지원)"),
+            mode="folder",
+            tr=self._t,
+        )
         self._nav_row.path_changed.connect(self._on_nav_changed)
         self._nav_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         layout.addWidget(self._nav_row)
@@ -637,7 +656,7 @@ class CorrectionPanel(QWidget):
         batch_inner.setContentsMargins(0, 0, 0, 0)
         batch_inner.setSpacing(Space.SM)
 
-        batch_hint = QLabel("처리할 Nav 폴더 목록")
+        batch_hint = QLabel(self._t("nav_files", "처리할 Nav 폴더 목록"))
         batch_hint.setStyleSheet(f"""
             color: {Dark.MUTED};
             font-size: {Font.XS}px;
@@ -672,7 +691,7 @@ class CorrectionPanel(QWidget):
         batch_btn_row = QHBoxLayout()
         batch_btn_row.setSpacing(Space.SM)
 
-        self._batch_add_btn = QPushButton("폴더 추가")
+        self._batch_add_btn = QPushButton(self._t("add_folder", "폴더 추가"))
         self._batch_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._batch_add_btn.setStyleSheet(f"""
             QPushButton {{
@@ -688,7 +707,7 @@ class CorrectionPanel(QWidget):
         self._batch_add_btn.clicked.connect(self._batch_add_folder)
         batch_btn_row.addWidget(self._batch_add_btn)
 
-        self._batch_remove_btn = QPushButton("선택 삭제")
+        self._batch_remove_btn = QPushButton(self._t("remove_selected", "선택 삭제"))
         self._batch_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._batch_remove_btn.setStyleSheet(f"""
             QPushButton {{
@@ -711,7 +730,12 @@ class CorrectionPanel(QWidget):
 
         layout.addWidget(_sep())
 
-        self._tide_row = PathRow("조위 폴더", "실측/예측 조위 파일 폴더 (TOPS/CSV 등)", mode="folder")
+        self._tide_row = PathRow(
+            self._t("tide_folder", "조위 폴더"),
+            self._t("tide_folder_hint", "실측/예측 조위 파일 폴더 (TOPS/CSV 등)"),
+            mode="folder",
+            tr=self._t,
+        )
         self._tide_row.path_changed.connect(self._on_tide_changed)
         self._tide_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         layout.addWidget(self._tide_row)
@@ -719,7 +743,7 @@ class CorrectionPanel(QWidget):
         # API checkbox
         api_row = QHBoxLayout()
         api_row.setContentsMargins(0, 0, 0, 0)
-        self._api_check = QCheckBox("API 자동수집 (항적 좌표 기반 자동 다운로드)")
+        self._api_check = QCheckBox(self._t("api_auto", "API 자동수집 (항적 좌표 기반 자동 다운로드)"))
         self._api_check.setStyleSheet(f"""
             QCheckBox {{
                 color: {Dark.MUTED};
@@ -755,12 +779,12 @@ class CorrectionPanel(QWidget):
         api_inner = QHBoxLayout(self._api_widget)
         api_inner.setContentsMargins(110 + Space.SM, 0, 0, 0)
         api_inner.setSpacing(Space.SM)
-        api_lbl = QLabel("API 키")
+        api_lbl = QLabel(self._t("api_key", "API 키"))
         api_lbl.setStyleSheet(f"color: {Dark.TEXT}; font-size: {Font.SM}px; background: transparent;")
         api_inner.addWidget(api_lbl)
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key_edit.setPlaceholderText("공공데이터포털 서비스키")
+        self._api_key_edit.setPlaceholderText(self._t("public_api_key", "공공데이터포털 서비스키"))
         self._api_key_edit.textChanged.connect(lambda _text: self._update_drop_zone_status())
         self._api_key_edit.setStyleSheet(f"""
             QLineEdit {{
@@ -780,8 +804,10 @@ class CorrectionPanel(QWidget):
         layout.addWidget(_sep())
 
         self._output_row = PathRow(
-            "출력 TID", "조석보정 결과 (.tid) 저장 경로",
+            self._t("output_tid", "출력 TID"),
+            self._t("output_tid_hint", "조석보정 결과 (.tid) 저장 경로"),
             mode="save", file_filter="TID (*.tid);;All (*.*)",
+            tr=self._t,
         )
         self._output_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         layout.addWidget(self._output_row)
@@ -805,15 +831,22 @@ class CorrectionPanel(QWidget):
         card_layout.setContentsMargins(Space.BASE, Space.MD, Space.BASE, Space.MD)
         card_layout.setSpacing(Space.SM)
 
-        self._db_section = CollapsibleSection("개정수 DB 설정")
+        self._db_section = CollapsibleSection(self._t("db_settings", "개정수 DB 설정"), tr=self._t)
 
-        self._db_row = PathRow("개정수 DB", "File_Catalog.txt + CT/ 폴더가 있는 디렉토리", mode="folder")
+        self._db_row = PathRow(
+            self._t("db_folder", "개정수 DB"),
+            self._t("db_folder_hint", "File_Catalog.txt + CT/ 폴더가 있는 디렉토리"),
+            mode="folder",
+            tr=self._t,
+        )
         self._db_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         self._db_section.content_layout.addWidget(self._db_row)
 
         self._station_row = PathRow(
-            "기준항 정보", "기준항정보.txt 파일",
+            self._t("station_info", "기준항 정보"),
+            self._t("station_info_hint", "기준항정보.txt 파일"),
             mode="file", file_filter="텍스트 (*.txt);;All (*.*)",
+            tr=self._t,
         )
         self._station_row.path_changed.connect(self._on_station_changed)
         self._station_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
@@ -826,22 +859,25 @@ class CorrectionPanel(QWidget):
     #  Options Card
     # ────────────────────────────────────────────
     def _build_options_card(self):
-        card, layout = _card("보정 옵션", accent_color=Dark.SLATE)
+        card, layout, title_lbl = _card(self._t("correction_options", "보정 옵션"), accent_color=Dark.SLATE)
+        self._options_title_lbl = title_lbl
 
         # Row 0: Tide model, output format
         row0 = QHBoxLayout()
         row0.setSpacing(Space.LG)
 
-        row0.addLayout(self._option_group("조석 모델", self._make_tide_model_combo()))
-        row0.addLayout(self._option_group("출력 포맷", self._make_output_format_combo()))
+        row0.addLayout(self._option_group(self._t("tide_model", "조석 모델"), self._make_tide_model_combo()))
+        row0.addLayout(self._option_group(self._t("output_format", "출력 포맷"), self._make_output_format_combo()))
         row0.addStretch()
 
         layout.addLayout(row0)
 
         # Model directory row (hidden by default, shown for global models)
         self._model_dir_row = PathRow(
-            "모델 경로", "pyTMD 모델 데이터 디렉토리 (FES2014/TPXO9)",
+            self._t("model_folder", "모델 경로"),
+            self._t("model_folder_hint", "pyTMD 모델 데이터 디렉토리 (FES2014/TPXO9)"),
             mode="folder",
+            tr=self._t,
         )
         self._model_dir_row.path_changed.connect(lambda _path: self._update_drop_zone_status())
         self._model_dir_row.setVisible(False)
@@ -851,9 +887,9 @@ class CorrectionPanel(QWidget):
         row1 = QHBoxLayout()
         row1.setSpacing(Space.LG)
 
-        row1.addLayout(self._option_group("조위 유형", self._make_tide_type_combo()))
-        row1.addLayout(self._option_group("기준항 수", self._make_rank_spin()))
-        row1.addLayout(self._option_group("시간대", self._make_tz_combo()))
+        row1.addLayout(self._option_group(self._t("tide_type", "조위 유형"), self._make_tide_type_combo()))
+        row1.addLayout(self._option_group(self._t("rank_limit", "기준항 수"), self._make_rank_spin()))
+        row1.addLayout(self._option_group(self._t("timezone", "시간대"), self._make_tz_combo()))
         row1.addStretch()
 
         layout.addLayout(row1)
@@ -892,15 +928,15 @@ class CorrectionPanel(QWidget):
         row2 = QHBoxLayout()
         row2.setSpacing(Space.LG)
 
-        row2.addLayout(self._option_group("시간 간격", self._make_interval_spin()))
+        row2.addLayout(self._option_group(self._t("time_interval", "시간 간격"), self._make_interval_spin()))
 
-        self._detail_check = self._styled_check("상세출력", True)
+        self._detail_check = self._styled_check(self._t("detail_output", "상세출력"), True)
         row2.addWidget(self._detail_check)
 
-        self._graph_check = self._styled_check("그래프", True)
+        self._graph_check = self._styled_check(self._t("graph", "그래프"), True)
         row2.addWidget(self._graph_check)
 
-        row2.addLayout(self._option_group("허용 편차", self._make_tolerance_spin()))
+        row2.addLayout(self._option_group(self._t("tolerance", "허용 편차"), self._make_tolerance_spin()))
 
         row2.addStretch()
         layout.addLayout(row2)
@@ -923,13 +959,13 @@ class CorrectionPanel(QWidget):
         row3 = QHBoxLayout()
         row3.setSpacing(Space.MD)
 
-        self._validate_check = self._styled_check("검증:", False)
+        self._validate_check = self._styled_check(self._t("validate", "검증:"), False)
         self._validate_check.toggled.connect(self._toggle_validate)
         row3.addWidget(self._validate_check)
 
         self._validate_edit = QLineEdit()
         self._validate_edit.setEnabled(False)
-        self._validate_edit.setPlaceholderText("참조 TID 파일 경로")
+        self._validate_edit.setPlaceholderText(self._t("reference_tid", "참조 TID 파일 경로"))
         self._validate_edit.textChanged.connect(lambda _text: self._update_drop_zone_status())
         self._validate_edit.setStyleSheet(f"""
             QLineEdit {{
@@ -945,7 +981,7 @@ class CorrectionPanel(QWidget):
         """)
         row3.addWidget(self._validate_edit, 1)
 
-        self._validate_btn = QPushButton("탐색")
+        self._validate_btn = QPushButton(self._t("browse", "탐색"))
         self._validate_btn.setEnabled(False)
         self._validate_btn.setFixedWidth(54)
         self._validate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -987,7 +1023,7 @@ class CorrectionPanel(QWidget):
         btn_row.setSpacing(Space.SM)
 
         # Run button
-        self._run_btn = QPushButton("  보정 수행  ")
+        self._run_btn = QPushButton(f"  {self._t('run', '보정 수행')}  ")
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1006,7 +1042,7 @@ class CorrectionPanel(QWidget):
         btn_row.addWidget(self._run_btn)
 
         # Stop button
-        self._stop_btn = QPushButton("  중지  ")
+        self._stop_btn = QPushButton(f"  {self._t('stop', '중지')}  ")
         self._stop_btn.setEnabled(False)
         self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._stop_btn.setStyleSheet(f"""
@@ -1032,10 +1068,10 @@ class CorrectionPanel(QWidget):
 
         # Utility buttons
         for label, callback in [
-            ("INI 불러오기", self._load_ini),
-            ("세팅 저장", self._save_preset),
-            ("세팅 불러오기", self._load_preset),
-            ("초기화", self._reset),
+            (self._t("load_ini", "INI 불러오기"), self._load_ini),
+            (self._t("save_preset", "세팅 저장"), self._save_preset),
+            (self._t("load_preset", "세팅 불러오기"), self._load_preset),
+            (self._t("reset", "초기화"), self._reset),
         ]:
             btn = QPushButton(label)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1059,7 +1095,7 @@ class CorrectionPanel(QWidget):
         # History combo (A4: Project History)
         self._history_combo = QComboBox()
         self._history_combo.setFixedWidth(180)
-        self._history_combo.setPlaceholderText("최근 보정")
+        self._history_combo.setPlaceholderText(self._t("recent_correction", "최근 보정"))
         self._style_combo(self._history_combo)
         self._history_combo.activated.connect(self._on_history_selected)
         btn_row.addWidget(self._history_combo)
@@ -1067,7 +1103,7 @@ class CorrectionPanel(QWidget):
         btn_row.addStretch()
 
         # Open output folder button (hidden initially)
-        self._open_folder_btn = QPushButton("출력 폴더 열기")
+        self._open_folder_btn = QPushButton(self._t("open_output_folder", "출력 폴더 열기"))
         self._open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._open_folder_btn.setVisible(False)
         self._open_folder_btn.setStyleSheet(f"""
@@ -1108,7 +1144,8 @@ class CorrectionPanel(QWidget):
     #  Log Card
     # ────────────────────────────────────────────
     def _build_log_card(self):
-        card, layout = _card("처리 로그", accent_color=Dark.SLATE)
+        card, layout, title_lbl = _card(self._t("processing_log", "처리 로그"), accent_color=Dark.SLATE)
+        self._log_title_lbl = title_lbl
         self._log_viewer = LogViewer()
         self._log_viewer.setMinimumHeight(200)
         layout.addWidget(self._log_viewer, 1)
@@ -1140,7 +1177,8 @@ class CorrectionPanel(QWidget):
         bar.setFixedSize(4, 16)
         bar.setStyleSheet(f"background: {Dark.GREEN}; border: none; border-radius: 2px;")
         hdr.addWidget(bar)
-        lbl = QLabel("결과 미리보기")
+        self._preview_title_lbl = QLabel(self._t("result_preview", "결과 미리보기"))
+        lbl = self._preview_title_lbl
         lbl.setStyleSheet(f"""
             color: {Dark.TEXT_BRIGHT};
             font-size: {Font.SM}px;
@@ -2531,3 +2569,50 @@ class CorrectionPanel(QWidget):
         self._controller.toast_requested.emit(
             f"히스토리 복원: {os.path.basename(nav_path)}", "info"
         )
+
+    def retranslate(self):
+        """Refresh visible labels after language changes."""
+        if hasattr(self, "_input_title_lbl") and self._input_title_lbl:
+            self._input_title_lbl.setText(self._t("input_settings", "입력 파일 설정"))
+        if hasattr(self, "_options_title_lbl") and self._options_title_lbl:
+            self._options_title_lbl.setText(self._t("correction_options", "보정 옵션"))
+        if hasattr(self, "_log_title_lbl") and self._log_title_lbl:
+            self._log_title_lbl.setText(self._t("processing_log", "처리 로그"))
+        if hasattr(self, "_preview_title_lbl") and self._preview_title_lbl:
+            self._preview_title_lbl.setText(self._t("result_preview", "결과 미리보기"))
+        if hasattr(self, "_db_section"):
+            self._db_section.retranslate(self._t("db_settings", "개정수 DB 설정"))
+        if hasattr(self, "_drop_label"):
+            self._refresh_drop_zone_prompt()
+        if hasattr(self, "_batch_mode"):
+            self._batch_mode.setText(self._t("batch_mode", "배치 모드 (다중 폴더 처리)"))
+        if hasattr(self, "_nav_row"):
+            self._nav_row.retranslate(self._t("nav_folder", "항적 폴더"), self._t("nav_folder_hint", "Nav 데이터 폴더 (Before/After 모두 지원)"))
+        if hasattr(self, "_tide_row"):
+            self._tide_row.retranslate(self._t("tide_folder", "조위 폴더"), self._t("tide_folder_hint", "실측/예측 조위 파일 폴더 (TOPS/CSV 등)"))
+        if hasattr(self, "_output_row"):
+            self._output_row.retranslate(self._t("output_tid", "출력 TID"), self._t("output_tid_hint", "조석보정 결과 (.tid) 저장 경로"))
+        if hasattr(self, "_db_row"):
+            self._db_row.retranslate(self._t("db_folder", "개정수 DB"), self._t("db_folder_hint", "File_Catalog.txt + CT/ 폴더가 있는 디렉토리"))
+        if hasattr(self, "_station_row"):
+            self._station_row.retranslate(self._t("station_info", "기준항 정보"), self._t("station_info_hint", "기준항정보.txt 파일"))
+        if hasattr(self, "_model_dir_row"):
+            self._model_dir_row.retranslate(self._t("model_folder", "모델 경로"), self._t("model_folder_hint", "pyTMD 모델 데이터 디렉토리 (FES2014/TPXO9)"))
+        if hasattr(self, "_detail_check"):
+            self._detail_check.setText(self._t("detail_output", "상세출력"))
+        if hasattr(self, "_graph_check"):
+            self._graph_check.setText(self._t("graph", "그래프"))
+        if hasattr(self, "_validate_check"):
+            self._validate_check.setText(self._t("validate", "검증:"))
+        if hasattr(self, "_validate_edit"):
+            self._validate_edit.setPlaceholderText(self._t("reference_tid", "참조 TID 파일 경로"))
+        if hasattr(self, "_validate_btn"):
+            self._validate_btn.setText(self._t("browse", "탐색"))
+        if hasattr(self, "_run_btn"):
+            self._run_btn.setText(f"  {self._t('run', '보정 수행')}  ")
+        if hasattr(self, "_stop_btn"):
+            self._stop_btn.setText(f"  {self._t('stop', '중지')}  ")
+        if hasattr(self, "_open_folder_btn"):
+            self._open_folder_btn.setText(self._t("open_output_folder", "출력 폴더 열기"))
+        if hasattr(self, "_history_combo"):
+            self._history_combo.setPlaceholderText(self._t("recent_correction", "최근 보정"))
