@@ -13,8 +13,7 @@ logger = logging.getLogger(__name__)
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox,
-    QLineEdit, QPushButton, QScrollArea, QFrame, QFileDialog,
-    QMessageBox, QSpinBox, QDoubleSpinBox, QListWidget, QAbstractItemView,
+    QLineEdit, QPushButton, QScrollArea, QFrame, QFileDialog, QSpinBox, QDoubleSpinBox, QListWidget, QAbstractItemView,
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "_shared"))
@@ -1764,7 +1763,9 @@ class CorrectionPanel(QWidget):
 
         presets = list_presets()
         if not presets:
-            QMessageBox.information(self, "알림", "저장된 프리셋이 없습니다.")
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog("알림", "저장된 프리셋이 없습니다.", confirm_text="OK", cancel_text="", dialog_type="success", parent=self).exec()
             return
 
         names = []
@@ -1921,7 +1922,9 @@ class CorrectionPanel(QWidget):
         if errors:
             for err in errors:
                 self._log_viewer.append_log(err, "error")
-            QMessageBox.critical(self, "입력 오류", "\n".join(errors))
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog("입력 오류", "\n".join(errors), confirm_text="OK", cancel_text="", dialog_type="error", parent=self).exec()
             return False
         return True
 

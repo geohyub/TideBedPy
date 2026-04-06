@@ -6,7 +6,7 @@ import sys
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QCheckBox, QScrollArea, QWidget, QFrame, QMessageBox,
+    QCheckBox, QScrollArea, QWidget, QFrame,
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "_shared"))
@@ -214,11 +214,9 @@ class StationSelectDialog(QDialog):
             if cb.isChecked()
         ]
         if not selected:
-            QMessageBox.warning(
-                self,
-                self._t("none_selected_title", "선택 없음"),
-                self._t("none_selected", "최소 1개 관측소를 선택하세요."),
-            )
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog(self._t("none_selected_title", "선택 없음"), self._t("none_selected", "최소 1개 관측소를 선택하세요."), confirm_text="OK", cancel_text="", dialog_type="warning", parent=self).exec()
             return
         self.result = selected
         self.accept()

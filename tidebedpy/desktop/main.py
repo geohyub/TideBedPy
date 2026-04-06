@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "..
 from PySide6.QtGui import QShortcut, QKeySequence
 
 from geoview_pyside6 import GeoViewApp, Category
+from geoview_pyside6.icons import icon
+from geoview_pyside6.help import set_help
 
 from tidebedpy.desktop.app_controller import AppController
 from tidebedpy.desktop.i18n import TRANSLATIONS
@@ -41,13 +43,13 @@ class TideBedApp(GeoViewApp):
         self.register_translations(TRANSLATIONS)
 
         self._correction = CorrectionPanel(self.controller, tr=self.t)
-        self.add_panel("correction", "\u25A0", self.t("correction"), self._correction)
+        self.add_panel("correction", icon("waves"), self.t("correction"), self._correction)
 
         # Tools panel (lazy import to avoid circular)
         try:
             from tidebedpy.desktop.panels.tools_panel import ToolsPanel
             self._tools = ToolsPanel(self.controller, tr=self.t)
-            self.add_panel("tools", "\u25C6", self.t("tools"), self._tools)
+            self.add_panel("tools", icon("settings"), self.t("tools"), self._tools)
         except ImportError:
             pass
 
@@ -55,7 +57,7 @@ class TideBedApp(GeoViewApp):
         try:
             from tidebedpy.desktop.panels.compare_panel import ComparePanel
             self._compare = ComparePanel(self.controller, tr=self.t)
-            self.add_panel("compare", "\u25C7", self.t("compare"), self._compare)
+            self.add_panel("compare", icon("arrow-left-right"), self.t("compare"), self._compare)
         except ImportError:
             pass
 
@@ -63,7 +65,7 @@ class TideBedApp(GeoViewApp):
         try:
             from tidebedpy.desktop.panels.viewer_panel import ViewerPanel
             self._viewer = ViewerPanel(self.controller, tr=self.t)
-            self.add_panel("viewer", "\u25B3", self.t("viewer"), self._viewer)
+            self.add_panel("viewer", icon("eye"), self.t("viewer"), self._viewer)
         except ImportError:
             pass
 

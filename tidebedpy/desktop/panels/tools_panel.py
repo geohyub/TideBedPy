@@ -8,8 +8,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QThread, Slot, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QFrame, QScrollArea, QListWidget, QListWidgetItem, QFileDialog,
-    QMessageBox, QProgressBar, QAbstractItemView, QCheckBox,
+    QFrame, QScrollArea, QListWidget, QListWidgetItem, QFileDialog, QProgressBar, QAbstractItemView, QCheckBox,
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "_shared"))
@@ -463,13 +462,14 @@ class ToolsPanel(QWidget):
 
     def _clear_cache(self):
         """Clear all cached tide data."""
-        reply = QMessageBox.question(
-            self, "캐시 비우기",
+        from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+        _cdlg = ConfirmDialog(
+            "캐시 비우기",
             "모든 캐시된 조위 데이터를 삭제하시겠습니까?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            confirm_text="Yes", cancel_text="No", dialog_type="warning", parent=self,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if _cdlg.exec() != _cdlg.Accepted:
             return
         try:
             from tidebedpy.data_io.tide_cache import TideCache
@@ -479,8 +479,9 @@ class ToolsPanel(QWidget):
             self._refresh_cache_stats()
             self._controller.toast_requested.emit("캐시 비우기 완료", "success")
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"캐시 비우기 실패:\n{e}")
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
 
+            ConfirmDialog("오류", f"캐시 비우기 실패:\n{e}", confirm_text="OK", cancel_text="", dialog_type="error", parent=self).exec()
     def is_cache_enabled(self) -> bool:
         """Return whether API cache is enabled."""
         return self._cache_check.isChecked()
@@ -492,18 +493,24 @@ class ToolsPanel(QWidget):
     def _do_download(self):
         api_key = self._api_key_input.text().strip()
         if not api_key:
-            QMessageBox.warning(self, "입력 필요", "API 서비스키를 입력하세요.")
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog("입력 필요", "API 서비스키를 입력하세요.", confirm_text="OK", cancel_text="", dialog_type="warning", parent=self).exec()
             return
 
         selected = self._station_list.selectedIndexes()
         if not selected:
-            QMessageBox.warning(self, "선택 필요", "관측소를 선택하세요.")
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog("선택 필요", "관측소를 선택하세요.", confirm_text="OK", cancel_text="", dialog_type="warning", parent=self).exec()
             return
 
         start = self._start_date.text().strip()
         end = self._end_date.text().strip()
         if len(start) != 8 or len(end) != 8:
-            QMessageBox.warning(self, "입력 오류", "날짜를 YYYYMMDD 형식으로 입력하세요.")
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog("입력 오류", "날짜를 YYYYMMDD 형식으로 입력하세요.", confirm_text="OK", cancel_text="", dialog_type="warning", parent=self).exec()
             return
 
         try:
@@ -532,7 +539,9 @@ class ToolsPanel(QWidget):
         if success:
             self._api_status.setText("다운로드 완료")
             self._controller.toast_requested.emit("API 다운로드 완료", "success")
-            QMessageBox.information(self, "완료", msg)
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog("완료", msg, confirm_text="OK", cancel_text="", dialog_type="success", parent=self).exec()
         else:
             self._api_status.setText(f"오류: {msg}")
             self._controller.toast_requested.emit(f"API 오류: {msg}", "error")
@@ -551,7 +560,9 @@ class ToolsPanel(QWidget):
                 if f.lower().endswith(".csv")
             ]
             if not csv_files:
-                QMessageBox.warning(self, "변환", "CSV 파일이 없습니다.")
+                from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+                ConfirmDialog("변환", "CSV 파일이 없습니다.", confirm_text="OK", cancel_text="", dialog_type="warning", parent=self).exec()
                 return
         else:
             files, _ = QFileDialog.getOpenFileNames(
@@ -572,15 +583,17 @@ class ToolsPanel(QWidget):
                 self._controller.toast_requested.emit(
                     f"CSV→TOPS: {len(results)}개 관측소 변환 완료", "success"
                 )
-                QMessageBox.information(
-                    self, "완료",
-                    f"{len(results)}개 관측소 변환 완료\n출력: {out_dir}",
-                )
-            else:
-                QMessageBox.warning(self, "결과", "변환된 파일이 없습니다.")
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"변환 실패:\n{e}")
+                from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
 
+                ConfirmDialog("완료", f"{len(results)}개 관측소 변환 완료\n출력: {out_dir}", confirm_text="OK", cancel_text="", dialog_type="success", parent=self).exec()
+            else:
+                from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+                ConfirmDialog("결과", "변환된 파일이 없습니다.", confirm_text="OK", cancel_text="", dialog_type="warning", parent=self).exec()
+        except Exception as e:
+            from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+            ConfirmDialog("오류", f"변환 실패:\n{e}", confirm_text="OK", cancel_text="", dialog_type="error", parent=self).exec()
     # ════════════════════════════════════════════
     #  Manual
     # ════════════════════════════════════════════
@@ -602,4 +615,6 @@ class ToolsPanel(QWidget):
                         import subprocess
                         subprocess.Popen(["start", "", path], shell=True)
                         return
-        QMessageBox.information(self, "매뉴얼", "매뉴얼 파일을 찾을 수 없습니다.")
+        from geoview_pyside6.widgets.confirm_dialog import ConfirmDialog
+
+        ConfirmDialog("매뉴얼", "매뉴얼 파일을 찾을 수 없습니다.", confirm_text="OK", cancel_text="", dialog_type="success", parent=self).exec()
